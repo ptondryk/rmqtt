@@ -1,12 +1,7 @@
 use std::io::prelude::*;
 use std::net::TcpStream;
 use mqtt::CtrlPacket;
-
-use std::process::Command;
 use std::str;
-
-use std::time::Duration;
-use std::thread::sleep;
 
 mod mqtt;
 
@@ -56,11 +51,8 @@ impl Mqtt {
         }
     }
 
-    fn receive(&mut self) -> Vec<u8> {
+    fn receive(&mut self) -> Option<CtrlPacket> {
         if let Some(ref mut stream) = self.stream {
-
-            sleep(Duration::from_millis(1000));
-
             let mut buffer: Vec<u8> = Vec::new();
             stream.read_to_end(&mut buffer);
 
@@ -78,11 +70,11 @@ impl Mqtt {
             } else {
                 println!("empty response");
             }
-
-            buffer
+            // TODO parse buffer
         } else {
             panic!("Connection not established!");
         }
+        None
     }
 }
 
