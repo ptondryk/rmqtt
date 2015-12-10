@@ -108,13 +108,34 @@ impl CtrlPacket {
             if (length > 0) {
                 tmp = tmp | 0x80;
             }
-            println!("push = {:?}", tmp as u8);
             result.push(tmp as u8);
             if (length <= 0) {
                 break;
             }
         }
         result
+    }
+
+    fn decode_remaining_length(remaining_length: Vec<u8>) -> i32 {
+        let mut multiplier: i32 = 1;
+        let mut value: i32 = 0;
+        let mut encodedByte: u8 = 0;
+        let mut counter: i8 = 0;
+
+        loop {
+            encodedByte = remaining_length[counter as usize];
+            value += (encodedByte & 127) as i32 * multiplier;
+
+            multiplier *= 128;
+            if (multiplier > 128 * 128 * 128) {
+                panic!("Malformed Remaining Length");
+            }
+            if ((encodedByte & 128) == 0) {
+                break;
+            }
+            counter += 1;
+        }
+        value
     }
 
     fn encode_string(string_to_encode: &str) -> Vec<u8> {
@@ -169,4 +190,22 @@ fn test_encode_remaining_length3() {
     assert_eq!(0x83, result[0]);
     assert_eq!(0x80, result[1]);
     assert_eq!(0x01, result[2]);
+}
+
+#[test]
+fn test_decode_remaining_length1() {
+    let encoded_remaining_length: Vec<u8> = CtrlPacket::encode_remaining_length(20);
+    assert_eq!(20, CtrlPacket::decode_remaining_length(encoded_remaining_length));
+}
+
+#[test]
+fn test_decode_remaining_length2() {
+    let encoded_remaining_length: Vec<u8> = CtrlPacket::encode_remaining_length(1307);
+    assert_eq!(1307, CtrlPacket::decode_remaining_length(encoded_remaining_length));
+}
+
+#[test]
+fn test_decode_remaining_length3() {
+    let encoded_remaining_length: Vec<u8> = CtrlPacket::encode_remaining_length(16387);
+    assert_eq!(16387, CtrlPacket::decode_remaining_length(encoded_remaining_length));
 }
