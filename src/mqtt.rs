@@ -35,10 +35,6 @@ impl CtrlPacket {
         // id = 1 and reserved flags = 0
         result.push(0x10);
 
-        // TODO calculate, encode and add the "remaining length" to the result
-        // TODO now it is hard-coded length
-        result.push(0x29);
-
         // Protocol Name
         // "MQTT" encoded as specified in (1.5.3)
         result.push(0x00);
@@ -93,6 +89,9 @@ impl CtrlPacket {
 
         // Password
         result.append(&mut CtrlPacket::encode_string("manager"));
+
+        // encode "remaining length" and insert at the second position in result vector
+        CtrlPacket::insert_all(CtrlPacket::encode_remaining_length(result.len() - 1), &mut result, 1);
 
         result
     }
@@ -155,6 +154,12 @@ impl CtrlPacket {
         }
         result
     }
+
+    fn insert_all(source: Vec<u8>, target: &mut Vec<u8>, index: usize) {
+        for i in (0..source.len()).rev() {
+            target.insert(index, source[i]);
+        }
+    }
 }
 
 #[test]
@@ -208,4 +213,14 @@ fn test_decode_remaining_length2() {
 fn test_decode_remaining_length3() {
     let encoded_remaining_length: Vec<u8> = CtrlPacket::encode_remaining_length(16387);
     assert_eq!(16387, CtrlPacket::decode_remaining_length(encoded_remaining_length));
+}
+
+#[test]
+fn test_insert_all() {
+    let mut v1 = vec![0x01, 0x02, 0x03, 0x04];
+    let mut v2 = vec![0x05, 0x06, 0x07];
+
+    CtrlPacket::insert_all(v2, &mut v1, 2);
+
+    assert_eq!(v1, [0x01, 0x02, 0x05, 0x06, 0x07, 0x03, 0x04]);
 }
