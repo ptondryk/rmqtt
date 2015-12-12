@@ -1,12 +1,12 @@
 use std::io::prelude::*;
 use std::net::TcpStream;
-use mqtt::CtrlPacket;
+use mqtt::*;
 use std::str;
 
 mod mqtt;
 
 trait HandlesMessage {
-    fn handleMessage(&self, topic: &str, message: &str);
+    fn handle_message(&self, topic: &str, message: &str);
 }
 
 struct Mqtt {
@@ -28,7 +28,7 @@ impl Mqtt {
 
     fn connect(&mut self) {
         self.stream = Some(TcpStream::connect(&*self.host).unwrap());
-        self.send(&*CtrlPacket::CONNECT.as_bytes().into_boxed_slice());
+        self.send(&CONNECT::new_with_authentication("testClientId", "system", "manager").as_bytes().into_boxed_slice());
         self.receive();
         // unimplemented!()
     }
@@ -51,7 +51,7 @@ impl Mqtt {
         }
     }
 
-    fn receive(&mut self) -> Option<CtrlPacket> {
+    fn receive(&mut self) -> Option<Box<CtrlPacket+'static>> {
         if let Some(ref mut stream) = self.stream {
             let mut buffer: Vec<u8> = Vec::new();
             stream.read_to_end(&mut buffer);
