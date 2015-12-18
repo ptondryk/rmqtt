@@ -187,8 +187,10 @@ impl CtrlPacket for CONNECT {
     }
 }
 
-fn parse(ctrl_packet_as_string: &str) -> Option<Box<CtrlPacket+'static>> {
-    // TODO implement
+pub fn parse(ctrl_packet_as_bytes: &Vec<u8>) -> Option<Box<CtrlPacket+'static>> {
+    println!("packet type: {:?}", ctrl_packet_as_bytes[0]);
+    println!("length: {:?}", decode_remaining_length(ctrl_packet_as_bytes, 1).unwrap());
+    println!("message: {:?}", ctrl_packet_as_bytes);
     None
 }
 
@@ -211,26 +213,32 @@ fn encode_remaining_length(input_length: usize) -> Vec<u8> {
     result
 }
 
-fn decode_remaining_length(remaining_length: Vec<u8>) -> i32 {
+fn decode_remaining_length(remaining_length: &Vec<u8>, offset: i8) -> Option<i32> {
     let mut multiplier: i32 = 1;
     let mut value: i32 = 0;
     let mut encodedByte: u8 = 0;
-    let mut counter: i8 = 0;
+    let mut counter: i8 = offset;
 
-    loop {
-        encodedByte = remaining_length[counter as usize];
-        value += (encodedByte & 127) as i32 * multiplier;
+    if remaining_length.len() as i8 - offset > 0 {
+        loop {
+            encodedByte = remaining_length[counter as usize];
+            value += (encodedByte & 127) as i32 * multiplier;
 
-        multiplier *= 128;
-        if (multiplier > 128 * 128 * 128) {
-            panic!("Malformed Remaining Length");
+            multiplier *= 128;
+            if (multiplier > 128 * 128 * 128) {
+                // Malformed Remaining Length (not complete?)
+                return None
+            }
+            if ((encodedByte & 128) == 0) {
+                break;
+            }
+            counter += 1;
+            if(counter == remaining_length.len() as i8 - offset - 1) {
+                return None
+            }
         }
-        if ((encodedByte & 128) == 0) {
-            break;
-        }
-        counter += 1;
     }
-    value
+    Some(value)
 }
 
 fn encode_string(string_to_encode: &str) -> Vec<u8> {

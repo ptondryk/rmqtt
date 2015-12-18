@@ -1,8 +1,9 @@
 use std::io::prelude::*;
 use std::net::TcpStream;
-use mqtt::*;
+use std::thread;
 use std::str;
 
+use mqtt::*;
 mod mqtt;
 
 trait HandlesMessage {
@@ -11,7 +12,6 @@ trait HandlesMessage {
 
 struct Mqtt {
     host: String,
-    stream: Option<TcpStream>,
     user: String,
     password: String
 }
@@ -20,17 +20,22 @@ impl Mqtt {
     fn new(host: &str, user: &str, password: &str) -> Mqtt {
         Mqtt {
             host: host.to_string(),
-            stream: None,
             user: user.to_string(),
             password: password.to_string()
         }
     }
 
     fn connect(&mut self) {
-        self.stream = Some(TcpStream::connect(&*self.host).unwrap());
-        self.send(&CONNECT::new_with_authentication("testClientId", "system", "manager").as_bytes().into_boxed_slice());
-        self.receive();
-        // unimplemented!()
+        // connect to the broker-server
+        let mut stream = TcpStream::connect(&*self.host).unwrap();
+
+        // send CONNECT packet to mqtt-broker
+        Mqtt::send(&mut stream, &CONNECT::new_with_authentication("testClientId", "system", "manager").as_bytes().into_boxed_slice());
+
+        // start receive thread
+        thread::spawn(move || {
+            Mqtt::receive(&mut stream);
+        });
     }
 
     fn publish(&mut self, topic: &str, text: &str) -> bool {
@@ -41,40 +46,21 @@ impl Mqtt {
         unimplemented!()
     }
 
-    fn send(&mut self, bytes: &[u8]) -> bool {
-        if let Some(ref mut stream) = self.stream {
-            // TODO check result
-            let _ = stream.write(bytes);
-            true
-        } else {
-            panic!("Connection not established!");
-        }
+    fn send(stream: &mut TcpStream, bytes: &[u8]) -> bool {
+        let _ = stream.write(bytes);
+        true
     }
 
-    fn receive(&mut self) -> Option<Box<CtrlPacket+'static>> {
-        if let Some(ref mut stream) = self.stream {
-            let mut buffer: Vec<u8> = Vec::new();
-            stream.read_to_end(&mut buffer);
+    fn receive(stream: &mut TcpStream) {
+        println!("start receive thread");
 
-            if(buffer.len() > 0) {
-                let mut a = [0; 20];
-                for i in 0..buffer.len() {
-                    a[i] = buffer[i];
-                }
-                let s = match str::from_utf8(&a) {
-                    Ok(v) => v,
-                    Err(e) => panic!("Invalid UTF-8 sequence: {}", e),
-                };
-
-                println!("result: {}", s);
-            } else {
-                println!("empty response");
+        let mut buffer: Vec<u8> = Vec::new();
+        loop {
+            for byte in stream.bytes() {
+                buffer.push(byte.unwrap());
+                let packet = mqtt::parse(&buffer);
             }
-            // TODO parse buffer
-        } else {
-            panic!("Connection not established!");
         }
-        None
     }
 }
 
