@@ -1,3 +1,6 @@
+use std::fmt;
+
+#[derive(Debug)]
 pub struct CONNECT {
     clientId: String,
     topic: Option<String>,
@@ -10,8 +13,13 @@ pub struct CONNECT {
     keep_alive: i16
 }
 
-struct CONNACK;
+#[derive(Debug)]
+struct CONNACK {
+    session_present: bool,
+    connect_return_code: u8
+}
 
+#[derive(Debug)]
 struct PUBLISH {
     duplicateDelivery: bool,
     QoS: u8,
@@ -90,8 +98,12 @@ impl CONNECT {
     }
 }
 
-pub trait CtrlPacket {
+pub trait CtrlPacket : fmt::Debug {
     fn as_bytes(&self) -> Vec<u8>;
+}
+
+pub trait FromBytes {
+    fn from_bytes(bytes: &Vec<u8>) -> Option<Self>;
 }
 
 impl CtrlPacket for CONNECT {
@@ -113,7 +125,7 @@ impl CtrlPacket for CONNECT {
         // Will Retain
         match self.retain {
             Some(ref retain) => {
-                if(*retain) {
+                if *retain {
                     flags = flags + 0x20;
                 }
             },
@@ -129,7 +141,7 @@ impl CtrlPacket for CONNECT {
         }
 
         // Clean Session
-        if(self.clean_session) {
+        if self.clean_session {
             flags = flags + 0x02;
         }
 
@@ -187,11 +199,42 @@ impl CtrlPacket for CONNECT {
     }
 }
 
-pub fn parse(ctrl_packet_as_bytes: &Vec<u8>) -> Option<Box<CtrlPacket+'static>> {
-    println!("packet type: {:?}", ctrl_packet_as_bytes[0]);
-    println!("length: {:?}", decode_remaining_length(ctrl_packet_as_bytes, 1).unwrap());
-    println!("message: {:?}", ctrl_packet_as_bytes);
-    None
+impl FromBytes for CONNECT {
+    fn from_bytes(bytes: &Vec<u8>) -> Option<CONNECT> {
+        unimplemented!()
+    }
+}
+
+impl CtrlPacket for CONNACK {
+    fn as_bytes(&self) -> Vec<u8> {
+        unimplemented!()
+    }
+}
+
+impl FromBytes for CONNACK {
+    fn from_bytes(bytes: &Vec<u8>) -> Option<CONNACK> {
+        match bytes.len(){
+            4 => Some(CONNACK {
+                session_present: bytes[2] == 1,
+                connect_return_code: bytes[3]
+            }),
+            _ => None
+        }
+    }
+}
+
+// pub fn parse(ctrl_packet_as_bytes: &Vec<u8>) -> Option<Box<CtrlPacket+'static>> {
+pub fn parse(ctrl_packet_as_bytes: &Vec<u8>) -> Option<Box<CtrlPacket>> {
+    match ctrl_packet_as_bytes[0] {
+        0x20 => {
+            let result: Option<CONNACK> = CONNACK::from_bytes(ctrl_packet_as_bytes);
+            match result {
+                Some(packet) => Some(Box::new(packet)),
+                None => None
+            }
+        },
+        _ => None
+    }
 }
 
 fn encode_remaining_length(input_length: usize) -> Vec<u8> {
@@ -202,11 +245,11 @@ fn encode_remaining_length(input_length: usize) -> Vec<u8> {
     loop {
         tmp = length % 0x80;
         length = length / 0x80;
-        if (length > 0) {
+        if length > 0 {
             tmp = tmp | 0x80;
         }
         result.push(tmp as u8);
-        if (length <= 0) {
+        if length <= 0 {
             break;
         }
     }
@@ -225,15 +268,15 @@ fn decode_remaining_length(remaining_length: &Vec<u8>, offset: i8) -> Option<i32
             value += (encodedByte & 127) as i32 * multiplier;
 
             multiplier *= 128;
-            if (multiplier > 128 * 128 * 128) {
+            if multiplier > 128 * 128 * 128 {
                 // Malformed Remaining Length (not complete?)
                 return None
             }
-            if ((encodedByte & 128) == 0) {
+            if (encodedByte & 128) == 0 {
                 break;
             }
             counter += 1;
-            if(counter == remaining_length.len() as i8 - offset - 1) {
+            if counter == remaining_length.len() as i8 - offset {
                 return None
             }
         }
@@ -267,13 +310,14 @@ fn insert_all(source: Vec<u8>, target: &mut Vec<u8>, index: usize) {
 
 #[test]
 fn test_encode_string1() {
-    let result: Vec<u8> = encode_string("TEST");
+    let result: Vec<u8> = encode_string("TESTT");
     assert_eq!(0x00, result[0]);
-    assert_eq!(0x04, result[1]);
+    assert_eq!(0x05, result[1]);
     assert_eq!(0x54, result[2]);
     assert_eq!(0x45, result[3]);
     assert_eq!(0x53, result[4]);
     assert_eq!(0x54, result[5]);
+    assert_eq!(0x54, result[6]);
 }
 
 #[test]
@@ -314,19 +358,19 @@ fn test_encode_remaining_length3() {
 #[test]
 fn test_decode_remaining_length1() {
     let encoded_remaining_length: Vec<u8> = encode_remaining_length(20);
-    assert_eq!(20, decode_remaining_length(encoded_remaining_length));
+    assert_eq!(20, decode_remaining_length(&encoded_remaining_length, 0).unwrap());
 }
 
 #[test]
 fn test_decode_remaining_length2() {
     let encoded_remaining_length: Vec<u8> = encode_remaining_length(1307);
-    assert_eq!(1307, decode_remaining_length(encoded_remaining_length));
+    assert_eq!(1307, decode_remaining_length(&encoded_remaining_length, 0).unwrap());
 }
 
 #[test]
 fn test_decode_remaining_length3() {
     let encoded_remaining_length: Vec<u8> = encode_remaining_length(16387);
-    assert_eq!(16387, decode_remaining_length(encoded_remaining_length));
+    assert_eq!(16387, decode_remaining_length(&encoded_remaining_length, 0).unwrap());
 }
 
 #[test]

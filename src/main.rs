@@ -58,7 +58,15 @@ impl Mqtt {
         loop {
             for byte in stream.bytes() {
                 buffer.push(byte.unwrap());
-                let packet = mqtt::parse(&buffer);
+                let received_packet = mqtt::parse(&buffer);
+                match received_packet {
+                    Some(ref packet) => {
+                        println!("parsed packet");
+                        println!("{:?}", packet);
+                        buffer.clear();
+                    },
+                    None => {}
+                }
             }
         }
     }
@@ -67,4 +75,5 @@ impl Mqtt {
 fn main() {
     let mut m = Mqtt::new("localhost:1883", "host", "password");
     m.connect();
+    loop {}
 }
