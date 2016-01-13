@@ -14,29 +14,54 @@ pub struct CONNECT {
 }
 
 #[derive(Debug)]
-struct CONNACK {
+pub struct CONNACK {
     session_present: bool,
     connect_return_code: u8
 }
 
 #[derive(Debug)]
-struct PUBLISH {
-    duplicateDelivery: bool,
+pub struct PUBLISH {
+    duplicate_delivery: bool,
     QoS: u8,
     retain: bool
 }
 
-struct PUBACK;
-struct PUBREC;
-struct PUBREL;
-struct PUBCOMP;
-struct SUBSCRIBE;
-struct SUBACK;
-struct UNSUBSCRIBE;
-struct UNSUBACK;
-struct PINGREQ;
-struct PINGRESP;
-struct DISCONNECT;
+#[derive(Debug)]
+pub struct PUBACK;
+
+#[derive(Debug)]
+pub struct PUBREC;
+
+#[derive(Debug)]
+pub struct PUBREL;
+
+#[derive(Debug)]
+pub struct PUBCOMP;
+
+#[derive(Debug)]
+pub struct SUBSCRIBE {
+    topic_filter: String,
+    QoS: u8,
+    packet_id: i16
+}
+
+#[derive(Debug)]
+pub struct SUBACK;
+
+#[derive(Debug)]
+pub struct UNSUBSCRIBE;
+
+#[derive(Debug)]
+pub struct UNSUBACK;
+
+#[derive(Debug)]
+pub struct PINGREQ;
+
+#[derive(Debug)]
+pub struct PINGRESP;
+
+#[derive(Debug)]
+pub struct DISCONNECT;
 
 impl CONNECT {
     pub fn new(clientId: &str) -> CONNECT {
@@ -223,6 +248,41 @@ impl FromBytes for CONNACK {
     }
 }
 
+impl SUBSCRIBE {
+    pub fn new(topic: &str, QoS: u8, packet_id: i16) -> SUBSCRIBE {
+        SUBSCRIBE {
+            topic_filter: topic.to_string(),
+            QoS: QoS,
+            packet_id: packet_id
+        }
+    }
+}
+
+impl CtrlPacket for SUBSCRIBE {
+    fn as_bytes(&self) -> Vec<u8> {
+        let mut result: Vec<u8> = Vec::new();
+
+        // id = 8 and reserved flags = 2
+        result.push(0x82);
+
+        // packet identifier
+        result.push((self.packet_id / 256) as u8);
+        result.push(self.packet_id as u8);
+
+        // Client Identifier
+        result.append(&mut encode_string(&self.topic_filter));
+
+        // reserved & QoS
+        result.push(self.QoS);
+
+        // encode "remaining length" and insert at the second position in result vector
+        insert_all(encode_remaining_length(result.len() - 1), &mut result, 1);
+
+        result
+    }
+
+}
+
 // pub fn parse(ctrl_packet_as_bytes: &Vec<u8>) -> Option<Box<CtrlPacket+'static>> {
 pub fn parse(ctrl_packet_as_bytes: &Vec<u8>) -> Option<Box<CtrlPacket>> {
     match ctrl_packet_as_bytes[0] {
@@ -291,8 +351,8 @@ fn encode_string(string_to_encode: &str) -> Vec<u8> {
     let tmp: u16 = string_length as u16;
 
     // encode the length of the string
-    result.push((tmp / 16) as u8);
-    result.push((tmp % 16) as u8);
+    result.push((tmp / 256) as u8);
+    result.push((tmp % 256) as u8);
 
     // write the string to the result-array
     let string_as_bytes = string_to_encode.as_bytes();
