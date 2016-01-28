@@ -33,7 +33,14 @@ impl Mqtt {
     }
 
     fn subscribe<T: HandlesMessage>(&mut self, topic: &str, handler: T) {
-        self.connection_wrapper.lock().unwrap().subscribe(topic, handler);
+        match self.connection_wrapper.lock() {
+            Ok(mut locked_connection) => {
+                locked_connection.subscribe(topic, handler);
+            },
+            Err(error) => {
+                println!("{:?}", error);
+            }
+        }
     }
 }
 
@@ -47,6 +54,7 @@ impl MqttConnection {
     fn connect(host: &str, settings: Option<MqttConnectionSettings>)
             -> (Arc<Mutex<MqttConnection>>, JoinHandle<()>) {
         let stream = TcpStream::connect(host).unwrap();
+        stream.set_read_timeout(Some(Duration::new(0, 10000)));
         let mut mqtt_connection = Arc::new(
                         Mutex::new(MqttConnection {
                                 packet_id: 0,
@@ -57,9 +65,7 @@ impl MqttConnection {
         // start the receive-thread
         let mut child_mqtt_connection = mqtt_connection.clone();
         let join_handler = thread::spawn(move || {
-            loop {
-                child_mqtt_connection.lock().unwrap().receive();
-            }
+            MqttConnection::start_receive_thread(child_mqtt_connection);
         });
 
         let shared_mqtt_connection = mqtt_connection.clone();
@@ -73,7 +79,7 @@ impl MqttConnection {
         }
 
         // return the connection object and the join handle
-        (shared_mqtt_connection, join_handler)
+        (mqtt_connection.clone(), join_handler)
     }
 
 
@@ -81,12 +87,11 @@ impl MqttConnection {
         unimplemented!()
     }
 
-    fn subscribe<T: HandlesMessage>(&mut self, topic: &str, handler: T) -> bool {
+    fn subscribe<T: HandlesMessage>(&mut self, topic: &str, handler: T) {
         // send SUBSCRIBE packet to mqtt-broker
         let new_packet_id = self.packet_id;
         self.send(&SUBSCRIBE::new(topic, 0, new_packet_id).as_bytes().into_boxed_slice());
         self.packet_id = self.packet_id + 1;
-        true
     }
 
     fn send(&mut self, bytes: &[u8]) -> bool {
@@ -102,26 +107,36 @@ impl MqttConnection {
         }
     }
 
-    fn receive(&mut self) {
-        match(self.stream) {
-            Some(ref mut tcp_stream) => {
-                let mut buffer: Vec<u8> = Vec::new();
-                for byte in tcp_stream.bytes() {
-                    buffer.push(byte.unwrap());
-                    let received_packet = mqtt::parse(&buffer);
-                    match received_packet {
-                        Some(ref packet) => {
-                            println!("parsed packet");
-                            println!("{:?}", packet);
-                            buffer.clear();
-                        },
-                        None => {}
+    fn start_receive_thread(mqtt_connection: Arc<Mutex<MqttConnection>>) {
+        loop {
+            let mut locked_mqtt_connection = mqtt_connection.lock().unwrap();
+            match locked_mqtt_connection.stream {
+                Some(ref mut tcp_stream) => {
+                    let mut buffer: Vec<u8> = Vec::new();
+                    for byte in tcp_stream.bytes() {
+                        match byte {
+                            Ok(received_byte) => {
+                                buffer.push(received_byte);
+                                let received_packet = mqtt::parse(&buffer);
+                                match received_packet {
+                                    Some(ref packet) => {
+                                        println!("parsed packet");
+                                        println!("{:?}", packet);
+                                        buffer.clear();
+                                    },
+                                    None => {}
+                                }
+                            },
+                            Err(error) => {
+                                break;
+                            }
+                        }
                     }
-                }
-            },
-            None => {}
+                },
+                None => {}
+            }
+            thread::sleep(Duration::from_millis(3000));
         }
-        thread::sleep(Duration::from_millis(3000));
     }
 
 }

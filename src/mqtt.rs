@@ -46,7 +46,9 @@ pub struct SUBSCRIBE {
 }
 
 #[derive(Debug)]
-pub struct SUBACK;
+pub struct SUBACK {
+    return_code: u8
+}
 
 #[derive(Debug)]
 pub struct UNSUBSCRIBE;
@@ -280,7 +282,24 @@ impl CtrlPacket for SUBSCRIBE {
 
         result
     }
+}
 
+impl CtrlPacket for SUBACK {
+    fn as_bytes(&self) -> Vec<u8> {
+        unimplemented!()
+    }
+}
+
+impl FromBytes for SUBACK {
+    fn from_bytes(bytes: &Vec<u8>) -> Option<SUBACK> {
+        if bytes.len() > 4 {
+            Some(SUBACK {
+                return_code: bytes[4]
+            })
+        } else {
+            None
+        }
+    }
 }
 
 // pub fn parse(ctrl_packet_as_bytes: &Vec<u8>) -> Option<Box<CtrlPacket+'static>> {
@@ -288,6 +307,13 @@ pub fn parse(ctrl_packet_as_bytes: &Vec<u8>) -> Option<Box<CtrlPacket>> {
     match ctrl_packet_as_bytes[0] {
         0x20 => {
             let result: Option<CONNACK> = CONNACK::from_bytes(ctrl_packet_as_bytes);
+            match result {
+                Some(packet) => Some(Box::new(packet)),
+                None => None
+            }
+        },
+        0x90 => {
+            let result: Option<SUBACK> = SUBACK::from_bytes(ctrl_packet_as_bytes);
             match result {
                 Some(packet) => Some(Box::new(packet)),
                 None => None
