@@ -42,6 +42,17 @@ impl Mqtt {
             }
         }
     }
+
+    fn publish(&mut self, topic: &str, payload: &str) {
+        match self.connection_wrapper.lock() {
+            Ok(mut locked_connection) => {
+                locked_connection.publish(topic, payload);
+            },
+            Err(error) => {
+                println!("{:?}", error);
+            }
+        }
+    }
 }
 
 struct MqttConnection {
@@ -82,15 +93,17 @@ impl MqttConnection {
         (mqtt_connection.clone(), join_handler)
     }
 
-
-    fn publish(&mut self, topic: &str, payload: &str) -> bool {
-        unimplemented!()
-    }
-
     fn subscribe<T: HandlesMessage>(&mut self, topic: &str, handler: T) {
         // send SUBSCRIBE packet to mqtt-broker
         let new_packet_id = self.packet_id;
         self.send(&SUBSCRIBE::new(topic, 0, new_packet_id).as_bytes().into_boxed_slice());
+        self.packet_id = self.packet_id + 1;
+    }
+
+    fn publish(&mut self, topic: &str, payload: &str) {
+        // send PUBLISH packet to mqtt-broker
+        let new_packet_id = self.packet_id;
+        self.send(&PUBLISH::new(topic, payload, new_packet_id).as_bytes().into_boxed_slice());
         self.packet_id = self.packet_id + 1;
     }
 
@@ -168,5 +181,6 @@ fn main() {
     m.subscribe("testTopic1", ExampleHandler {
         example_var: 1
     });
-    loop {}
+    m.publish("testTopic2", "lalalalalala");
+    m.read_forever();
 }

@@ -21,6 +21,9 @@ pub struct CONNACK {
 
 #[derive(Debug)]
 pub struct PUBLISH {
+    packet_id: i16,
+    topic: String,
+    payload: String,
     duplicate_delivery: bool,
     QoS: u8,
     retain: bool
@@ -271,7 +274,7 @@ impl CtrlPacket for SUBSCRIBE {
         result.push((self.packet_id / 256) as u8);
         result.push(self.packet_id as u8);
 
-        // Client Identifier
+        // topic name
         result.append(&mut encode_string(&self.topic_filter));
 
         // reserved & QoS
@@ -299,6 +302,51 @@ impl FromBytes for SUBACK {
         } else {
             None
         }
+    }
+}
+
+impl PUBLISH {
+    pub fn new(topic: &str, payload: &str, packet_id: i16) -> PUBLISH {
+        PUBLISH {
+            packet_id: packet_id,
+            topic: topic.to_string(),
+            payload: payload.to_string(),
+            // TODO set the values properly
+            duplicate_delivery: false,
+            QoS: 0x00,
+            retain: false
+        }
+    }
+}
+
+impl CtrlPacket for PUBLISH {
+    fn as_bytes(&self) -> Vec<u8> {
+        let mut result: Vec<u8> = Vec::new();
+
+        // id = 3
+        // TODO set DUP flag / QoS / retain flag properly
+        result.push(0x30);
+
+        // topic name
+        result.append(&mut encode_string(&self.topic));
+
+        // packet identifier
+        result.push((self.packet_id / 256) as u8);
+        result.push(self.packet_id as u8);
+
+        // reserved & QoS
+        result.append(&mut array_to_vec(self.payload.as_bytes()));
+
+        // encode "remaining length" and insert at the second position in result vector
+        insert_all(encode_remaining_length(result.len() - 1), &mut result, 1);
+
+        result
+    }
+}
+
+impl FromBytes for PUBLISH {
+    fn from_bytes(bytes: &Vec<u8>) -> Option<PUBLISH> {
+        unimplemented!()
     }
 }
 
@@ -392,6 +440,10 @@ fn insert_all(source: Vec<u8>, target: &mut Vec<u8>, index: usize) {
     for i in (0..source.len()).rev() {
         target.insert(index, source[i]);
     }
+}
+
+fn array_to_vec(arr: &[u8]) -> Vec<u8> {
+     arr.iter().cloned().collect()
 }
 
 #[test]
