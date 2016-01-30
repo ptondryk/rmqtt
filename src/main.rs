@@ -133,8 +133,7 @@ impl MqttConnection {
                                 let received_packet = mqtt::parse(&buffer);
                                 match received_packet {
                                     Some(ref packet) => {
-                                        println!("parsed packet");
-                                        println!("{:?}", packet);
+                                        println!("RECEIVED: {:?}", packet);
                                         buffer.clear();
                                     },
                                     None => {}

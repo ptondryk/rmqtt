@@ -334,7 +334,7 @@ impl CtrlPacket for PUBLISH {
         result.push((self.packet_id / 256) as u8);
         result.push(self.packet_id as u8);
 
-        // reserved & QoS
+        // payload
         result.append(&mut array_to_vec(self.payload.as_bytes()));
 
         // encode "remaining length" and insert at the second position in result vector
@@ -346,7 +346,40 @@ impl CtrlPacket for PUBLISH {
 
 impl FromBytes for PUBLISH {
     fn from_bytes(bytes: &Vec<u8>) -> Option<PUBLISH> {
-        unimplemented!()
+        let remaining_length = decode_remaining_length(bytes, 1);
+
+        match remaining_length {
+            Some(decoded_remaining_length) => {
+                if decoded_remaining_length + 1 + remaining_length_length(decoded_remaining_length) as i32
+                        == bytes.len() as i32 {
+                    // TODO optimize
+                    let (_, variable_header_and_payload)
+                        = bytes.split_at((1 + remaining_length_length(decoded_remaining_length)) as usize);
+                    let topic_length = decode_string_length(&array_to_vec(variable_header_and_payload), 0);
+                    let (encoded_topic, _) = variable_header_and_payload.split_at((topic_length + 2) as usize);
+                    let (_, topic) = encoded_topic.split_at(2);
+                    let topic_as_string: String = String::from_utf8(array_to_vec(topic)).unwrap();
+                    let packet_id = (variable_header_and_payload[topic_length as usize] * 256) as i16 +
+                        variable_header_and_payload[(topic_length + 1) as usize] as i16;
+                    let(_, payload) = variable_header_and_payload.split_at((topic_length + 2) as usize);
+                    let payload_as_string = String::from_utf8(array_to_vec(payload)).unwrap();
+
+                    // TODO parse all parameters properly
+                    Some(PUBLISH {
+                        packet_id: packet_id,
+                        topic: topic_as_string,
+                        payload: payload_as_string,
+                        duplicate_delivery: false,
+                        QoS: 0,
+                        retain: false
+                    })
+                } else {
+                    None
+                }
+            },
+            None => None
+        }
+
     }
 }
 
@@ -360,6 +393,13 @@ pub fn parse(ctrl_packet_as_bytes: &Vec<u8>) -> Option<Box<CtrlPacket>> {
                 None => None
             }
         },
+        0x30 => {
+            let result: Option<PUBLISH> = PUBLISH::from_bytes(ctrl_packet_as_bytes);
+            match result {
+                Some(packet) => Some(Box::new(packet)),
+                None => None
+            }
+        }
         0x90 => {
             let result: Option<SUBACK> = SUBACK::from_bytes(ctrl_packet_as_bytes);
             match result {
@@ -418,6 +458,15 @@ fn decode_remaining_length(remaining_length: &Vec<u8>, offset: i8) -> Option<i32
     Some(value)
 }
 
+fn remaining_length_length(remaining_length: i32) -> i16 {
+    match remaining_length {
+        0...127 => 1,
+        128...16383 => 2,
+        16384...2097151 => 3,
+        _ => 4
+    }
+}
+
 fn encode_string(string_to_encode: &str) -> Vec<u8> {
     let string_length: usize = string_to_encode.len();
     let mut result: Vec<u8> = Vec::new();
@@ -434,6 +483,12 @@ fn encode_string(string_to_encode: &str) -> Vec<u8> {
         result.push(string_as_bytes[i]);
     }
     result
+}
+
+fn decode_string_length(bytes: &Vec<u8>, offset: i8) -> i16 {
+    let mut decoded_string_length: i16 = bytes[offset as usize] as i16 * 256 as i16;
+    decoded_string_length += bytes[offset as usize + 1] as i16;
+    decoded_string_length
 }
 
 fn insert_all(source: Vec<u8>, target: &mut Vec<u8>, index: usize) {
