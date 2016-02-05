@@ -5,11 +5,12 @@ use std::sync::{Mutex, Arc};
 use std::str;
 use std::thread::JoinHandle;
 use std::time::Duration;
+use std::collections::HashMap;
 
 use mqtt::*;
 mod mqtt;
 
-trait HandlesMessage {
+trait HandlesMessage : Sync + Send {
     fn handle_message(&self, topic: &str, message: &str);
 }
 
@@ -32,7 +33,7 @@ impl Mqtt {
         self.join_handler.join();
     }
 
-    fn subscribe<T: HandlesMessage>(&mut self, topic: &str, handler: T) {
+    fn subscribe<T: HandlesMessage+'static>(&mut self, topic: &str, handler: T) {
         match self.connection_wrapper.lock() {
             Ok(mut locked_connection) => {
                 locked_connection.subscribe(topic, handler);
@@ -57,7 +58,8 @@ impl Mqtt {
 
 struct MqttConnection {
     stream: Option<TcpStream>,
-    packet_id: i16
+    packet_id: i16,
+    message_handlers: HashMap<String, Box<HandlesMessage>>
 }
 
 impl MqttConnection {
@@ -69,7 +71,8 @@ impl MqttConnection {
         let mut mqtt_connection = Arc::new(
                         Mutex::new(MqttConnection {
                                 packet_id: 0,
-                                stream: Some(stream)
+                                stream: Some(stream),
+                                message_handlers: HashMap::new()
                             }
                         ));
 
@@ -84,7 +87,7 @@ impl MqttConnection {
         // send CONNECT packet to mqtt-broker
         match settings {
             Some(mqtt_settings) => {
-                shared_mqtt_connection.lock().unwrap().send(&CONNECT::new_with_authentication("testClientId",
+                shared_mqtt_connection.lock().unwrap().send(&CtrlPacket::new_connect_with_authentication("testClientId",
                     &mqtt_settings.user, &mqtt_settings.password).as_bytes().into_boxed_slice());
             }, None => {}
         }
@@ -93,17 +96,18 @@ impl MqttConnection {
         (mqtt_connection.clone(), join_handler)
     }
 
-    fn subscribe<T: HandlesMessage>(&mut self, topic: &str, handler: T) {
+    fn subscribe<T: HandlesMessage+'static>(&mut self, topic: &str, handler: T) {
         // send SUBSCRIBE packet to mqtt-broker
         let new_packet_id = self.packet_id;
-        self.send(&SUBSCRIBE::new(topic, 0, new_packet_id).as_bytes().into_boxed_slice());
+        self.send(&CtrlPacket::new_subscribe(topic, 0, new_packet_id).as_bytes().into_boxed_slice());
         self.packet_id = self.packet_id + 1;
+        self.message_handlers.insert(topic.to_string(), Box::new(handler));
     }
 
     fn publish(&mut self, topic: &str, payload: &str) {
         // send PUBLISH packet to mqtt-broker
         let new_packet_id = self.packet_id;
-        self.send(&PUBLISH::new(topic, payload, new_packet_id).as_bytes().into_boxed_slice());
+        self.send(&CtrlPacket::new_publish(topic, payload, new_packet_id).as_bytes().into_boxed_slice());
         self.packet_id = self.packet_id + 1;
     }
 
@@ -122,35 +126,53 @@ impl MqttConnection {
 
     fn start_receive_thread(mqtt_connection: Arc<Mutex<MqttConnection>>) {
         loop {
-            let mut locked_mqtt_connection = mqtt_connection.lock().unwrap();
-            match locked_mqtt_connection.stream {
-                Some(ref mut tcp_stream) => {
-                    let mut buffer: Vec<u8> = Vec::new();
-                    for byte in tcp_stream.bytes() {
-                        match byte {
-                            Ok(received_byte) => {
-                                buffer.push(received_byte);
-                                let received_packet = mqtt::parse(&buffer);
-                                match received_packet {
-                                    Some(ref packet) => {
-                                        println!("RECEIVED: {:?}", packet);
-                                        buffer.clear();
+            match mqtt_connection.lock() {
+                Ok(ref locked_mqtt_connection) => {
+                    match locked_mqtt_connection.stream {
+                        Some(ref tcp_stream) => {
+                            let mut buffer: Vec<u8> = Vec::new();
+                            for byte in tcp_stream.bytes() {
+                                match byte {
+                                    Ok(received_byte) => {
+                                        buffer.push(received_byte);
+                                        let received_packet = mqtt::parse(&buffer);
+                                        match received_packet {
+                                            Some(packet) => {
+                                                println!("RECEIVED: {:?}", packet);
+                                                match packet {
+                                                    CtrlPacket::PUBLISH { packet_id,
+                                                            ref topic, ref payload,
+                                                            duplicate_delivery, QoS, retain } => {
+                                                        match locked_mqtt_connection.message_handlers.get(topic) {
+                                                            Some(handler) => {
+                                                                handler.handle_message(topic, payload);
+                                                            },
+                                                            None => {
+                                                                println!("No handler for {:?} registered.", topic);
+                                                            }
+                                                        }
+                                                    },
+                                                    _ => {}
+                                                }
+                                                buffer.clear();
+                                            },
+                                            None => {}
+                                        }
                                     },
-                                    None => {}
+                                    Err(error) => {
+                                        break;
+                                    }
                                 }
-                            },
-                            Err(error) => {
-                                break;
                             }
-                        }
+                        },
+                        None => {}
                     }
                 },
-                None => {}
+                Err(_) => { println!("lock error"); }
             }
             thread::sleep(Duration::from_millis(3000));
         }
     }
-
 }
 
 struct MqttConnectionSettings {

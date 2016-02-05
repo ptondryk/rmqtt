@@ -1,90 +1,47 @@
 use std::fmt;
 
 #[derive(Debug)]
-pub struct CONNECT {
-    clientId: String,
-    topic: Option<String>,
-    content: Option<String>,
-    QoS: Option<u8>,
-    retain: Option<bool>,
-    username: Option<String>,
-    password: Option<String>,
-    clean_session: bool,
-    keep_alive: i16
+pub enum CtrlPacket {
+    CONNECT {
+        clientId: String,
+        topic: Option<String>,
+        content: Option<String>,
+        QoS: Option<u8>,
+        retain: Option<bool>,
+        username: Option<String>,
+        password: Option<String>,
+        clean_session: bool,
+        keep_alive: i16
+    },
+    CONNACK {
+        session_present: bool,
+        connect_return_code: u8
+    },
+    PUBLISH {
+        packet_id: i16,
+        topic: String,
+        payload: String,
+        duplicate_delivery: bool,
+        QoS: u8,
+        retain: bool
+    },
+    PUBACK, PUBREC, PUBREL, PUBCOMP,
+    SUBSCRIBE {
+        topic_filter: String,
+        QoS: u8,
+        packet_id: i16
+    },
+    SUBACK {
+        return_code: u8
+    },
+    UNSUBSCRIBE, UNSUBACK, PINGREQ, PINGRESP, DISCONNECT
 }
 
-#[derive(Debug)]
-pub struct CONNACK {
-    session_present: bool,
-    connect_return_code: u8
-}
+impl CtrlPacket {
 
-#[derive(Debug)]
-pub struct PUBLISH {
-    packet_id: i16,
-    topic: String,
-    payload: String,
-    duplicate_delivery: bool,
-    QoS: u8,
-    retain: bool
-}
-
-#[derive(Debug)]
-pub struct PUBACK;
-
-#[derive(Debug)]
-pub struct PUBREC;
-
-#[derive(Debug)]
-pub struct PUBREL;
-
-#[derive(Debug)]
-pub struct PUBCOMP;
-
-#[derive(Debug)]
-pub struct SUBSCRIBE {
-    topic_filter: String,
-    QoS: u8,
-    packet_id: i16
-}
-
-#[derive(Debug)]
-pub struct SUBACK {
-    return_code: u8
-}
-
-#[derive(Debug)]
-pub struct UNSUBSCRIBE;
-
-#[derive(Debug)]
-pub struct UNSUBACK;
-
-#[derive(Debug)]
-pub struct PINGREQ;
-
-#[derive(Debug)]
-pub struct PINGRESP;
-
-#[derive(Debug)]
-pub struct DISCONNECT;
-
-impl CONNECT {
-    pub fn new(clientId: &str) -> CONNECT {
-        CONNECT {
-            clientId: clientId.to_string(),
-            topic: None,
-            content: None,
-            QoS: None,
-            retain: None,
-            username: None,
-            password: None,
-            clean_session: false,
-            keep_alive: 10
-        }
-    }
-
-    pub fn new_with_authentication(clientId: &str, username: &str, password: &str) -> CONNECT {
-        CONNECT {
+    pub fn new_connect_with_authentication(clientId: &str, username: &str, password: &str)
+                -> CtrlPacket {
+        CtrlPacket::CONNECT {
             clientId: clientId.to_string(),
             topic: None,
             content: None,
@@ -97,217 +54,16 @@ impl CONNECT {
         }
     }
 
-    pub fn new_with_message(clientId: &str, topic: &str, content: &str, QoS: u8,
-            retain: bool) -> CONNECT {
-        CONNECT {
-            clientId: clientId.to_string(),
-            topic: Some(topic.to_string()),
-            content: Some(content.to_string()),
-            QoS: Some(QoS),
-            retain: Some(retain),
-            username: None,
-            password: None,
-            clean_session: false,
-            keep_alive: 10
-        }
-    }
-
-    pub fn new_with_message_and_authntication(clientId: &str, topic: &str,
-            content: &str, QoS: u8, retain: bool, username: &str, password: &str) -> CONNECT {
-        CONNECT {
-            clientId: clientId.to_string(),
-            topic: Some(topic.to_string()),
-            content: Some(content.to_string()),
-            QoS: Some(QoS),
-            retain: Some(retain),
-            username: Some(username.to_string()),
-            password: Some(password.to_string()),
-            clean_session: false,
-            keep_alive: 10
-        }
-    }
-}
-
-pub trait CtrlPacket : fmt::Debug {
-    fn as_bytes(&self) -> Vec<u8>;
-}
-
-pub trait FromBytes {
-    fn from_bytes(bytes: &Vec<u8>) -> Option<Self>;
-}
-
-impl CtrlPacket for CONNECT {
-    fn as_bytes(&self) -> Vec<u8> {
-        let mut result: Vec<u8> = Vec::new();
-
-        // id = 1 and reserved flags = 0
-        result.push(0x10);
-
-        // Protocol Name ("MQTT" encoded as specified in 1.5.3)
-        result.append(&mut encode_string("MQTT"));
-
-        // Protocol Level (MQTT 3.1.1 = 4)
-        result.push(0x04);
-
-        // initialize Connect Flags
-        let mut flags: u8 = 0;
-
-        // Will Retain
-        match self.retain {
-            Some(ref retain) => {
-                if *retain {
-                    flags = flags + 0x20;
-                }
-            },
-            None => {}
-        }
-
-        // Will QoS
-        match self.QoS {
-            Some(ref QoS) => {
-                flags = flags + (QoS << 3);
-            },
-            None => {}
-        }
-
-        // Clean Session
-        if self.clean_session {
-            flags = flags + 0x02;
-        }
-
-        // Keep Alive
-        // TODO proper encoding for longer keep alives
-        result.push(0x00);
-        result.push(self.keep_alive as u8);
-
-        // Client Identifier
-        result.append(&mut encode_string(&self.clientId));
-
-        // Will Topic
-        match self.topic {
-            Some(ref topic) => {
-                // Will Flag
-                flags = flags + 0x04;
-                result.append(&mut encode_string(&topic));
-            },
-            None => {}
-        }
-
-        // Will Message
-        match self.content {
-            Some(ref content) => {
-                result.append(&mut encode_string(&content));
-            },
-            None => {}
-        }
-
-        // User Name
-        match self.username {
-            Some(ref username) => {
-                flags = flags + 0x80;
-                result.append(&mut encode_string(&username));
-            },
-            None => {}
-        }
-
-        // Password
-        match self.password {
-            Some(ref password) => {
-                flags = flags + 0x40;
-                result.append(&mut encode_string(&password));
-            },
-            None => {}
-        }
-
-        // add flags to the result
-        result.insert(9, flags);
-
-        // encode "remaining length" and insert at the second position in result vector
-        insert_all(encode_remaining_length(result.len() - 1), &mut result, 1);
-
-        result
-    }
-}
-
-impl FromBytes for CONNECT {
-    fn from_bytes(bytes: &Vec<u8>) -> Option<CONNECT> {
-        unimplemented!()
-    }
-}
-
-impl CtrlPacket for CONNACK {
-    fn as_bytes(&self) -> Vec<u8> {
-        unimplemented!()
-    }
-}
-
-impl FromBytes for CONNACK {
-    fn from_bytes(bytes: &Vec<u8>) -> Option<CONNACK> {
-        match bytes.len(){
-            4 => Some(CONNACK {
-                session_present: bytes[2] == 1,
-                connect_return_code: bytes[3]
-            }),
-            _ => None
-        }
-    }
-}
-
-impl SUBSCRIBE {
-    pub fn new(topic: &str, QoS: u8, packet_id: i16) -> SUBSCRIBE {
-        SUBSCRIBE {
+    pub fn new_subscribe(topic: &str, QoS: u8, packet_id: i16) -> CtrlPacket {
+        CtrlPacket::SUBSCRIBE {
             topic_filter: topic.to_string(),
             QoS: QoS,
             packet_id: packet_id
         }
     }
-}
 
-impl CtrlPacket for SUBSCRIBE {
-    fn as_bytes(&self) -> Vec<u8> {
-        let mut result: Vec<u8> = Vec::new();
-
-        // id = 8 and reserved flags = 2
-        result.push(0x82);
-
-        // packet identifier
-        result.push((self.packet_id / 256) as u8);
-        result.push(self.packet_id as u8);
-
-        // topic name
-        result.append(&mut encode_string(&self.topic_filter));
-
-        // reserved & QoS
-        result.push(self.QoS);
-
-        // encode "remaining length" and insert at the second position in result vector
-        insert_all(encode_remaining_length(result.len() - 1), &mut result, 1);
-
-        result
-    }
-}
-
-impl CtrlPacket for SUBACK {
-    fn as_bytes(&self) -> Vec<u8> {
-        unimplemented!()
-    }
-}
-
-impl FromBytes for SUBACK {
-    fn from_bytes(bytes: &Vec<u8>) -> Option<SUBACK> {
-        if bytes.len() > 4 {
-            Some(SUBACK {
-                return_code: bytes[4]
-            })
-        } else {
-            None
-        }
-    }
-}
-
-impl PUBLISH {
-    pub fn new(topic: &str, payload: &str, packet_id: i16) -> PUBLISH {
-        PUBLISH {
+    pub fn new_publish(topic: &str, payload: &str, packet_id: i16) -> CtrlPacket {
+        CtrlPacket::PUBLISH {
             packet_id: packet_id,
             topic: topic.to_string(),
             payload: payload.to_string(),
@@ -317,98 +73,212 @@ impl PUBLISH {
             retain: false
         }
     }
-}
 
-impl CtrlPacket for PUBLISH {
-    fn as_bytes(&self) -> Vec<u8> {
-        let mut result: Vec<u8> = Vec::new();
+    pub fn as_bytes(self) -> Vec<u8> {
+        match self {
+            CtrlPacket::CONNECT { clientId, topic, content, QoS, retain, username, password, clean_session, keep_alive } => {
+                let mut result: Vec<u8> = Vec::new();
 
-        // id = 3
-        // TODO set DUP flag / QoS / retain flag properly
-        result.push(0x30);
+                // id = 1 and reserved flags = 0
+                result.push(0x10);
 
-        // topic name
-        result.append(&mut encode_string(&self.topic));
+                // Protocol Name ("MQTT" encoded as specified in 1.5.3)
+                result.append(&mut encode_string("MQTT"));
 
-        // packet identifier
-        result.push((self.packet_id / 256) as u8);
-        result.push(self.packet_id as u8);
+                // Protocol Level (MQTT 3.1.1 = 4)
+                result.push(0x04);
 
-        // payload
-        result.append(&mut array_to_vec(self.payload.as_bytes()));
+                // initialize Connect Flags
+                let mut flags: u8 = 0;
 
-        // encode "remaining length" and insert at the second position in result vector
-        insert_all(encode_remaining_length(result.len() - 1), &mut result, 1);
+                // Will Retain
+                match retain {
+                    Some(ref retain) => {
+                        if *retain {
+                            flags = flags + 0x20;
+                        }
+                    },
+                    None => {}
+                }
 
-        result
+                // Will QoS
+                match QoS {
+                    Some(ref QoS) => {
+                        flags = flags + (QoS << 3);
+                    },
+                    None => {}
+                }
+
+                // Clean Session
+                if clean_session {
+                    flags = flags + 0x02;
+                }
+
+                // Keep Alive
+                // TODO proper encoding for longer keep alives
+                result.push(0x00);
+                result.push(keep_alive as u8);
+
+                // Client Identifier
+                result.append(&mut encode_string(&clientId));
+
+                // Will Topic
+                match topic {
+                    Some(ref topic) => {
+                        // Will Flag
+                        flags = flags + 0x04;
+                        result.append(&mut encode_string(&topic));
+                    },
+                    None => {}
+                }
+
+                // Will Message
+                match content {
+                    Some(ref content) => {
+                        result.append(&mut encode_string(&content));
+                    },
+                    None => {}
+                }
+
+                // User Name
+                match username {
+                    Some(ref username) => {
+                        flags = flags + 0x80;
+                        result.append(&mut encode_string(&username));
+                    },
+                    None => {}
+                }
+
+                // Password
+                match password {
+                    Some(ref password) => {
+                        flags = flags + 0x40;
+                        result.append(&mut encode_string(&password));
+                    },
+                    None => {}
+                }
+
+                // add flags to the result
+                result.insert(9, flags);
+
+                // encode "remaining length" and insert at the second position in result vector
+                insert_all(encode_remaining_length(result.len() - 1), &mut result, 1);
+
+                result
+            },
+            CtrlPacket::SUBSCRIBE { topic_filter, QoS, packet_id } => {
+                let mut result: Vec<u8> = Vec::new();
+
+                // id = 8 and reserved flags = 2
+                result.push(0x82);
+
+                // packet identifier
+                result.push((packet_id / 256) as u8);
+                result.push(packet_id as u8);
+
+                // topic name
+                result.append(&mut encode_string(&topic_filter));
+
+                // reserved & QoS
+                result.push(QoS);
+
+                // encode "remaining length" and insert at the second position in result vector
+                insert_all(encode_remaining_length(result.len() - 1), &mut result, 1);
+
+                result
+            },
+            CtrlPacket::PUBLISH { packet_id, topic, payload, duplicate_delivery, QoS, retain } => {
+                let mut result: Vec<u8> = Vec::new();
+
+                // id = 3
+                // TODO set DUP flag / QoS / retain flag properly
+                result.push(0x30);
+
+                // topic name
+                result.append(&mut encode_string(&topic));
+
+                // packet identifier
+                result.push((packet_id / 256) as u8);
+                result.push(packet_id as u8);
+
+                // payload
+                result.append(&mut array_to_vec(payload.as_bytes()));
+
+                // encode "remaining length" and insert at the second position in result vector
+                insert_all(encode_remaining_length(result.len() - 1), &mut result, 1);
+
+                result
+            },
+            _ => {
+                // TODO implement
+                Vec::new()
+            }
+        }
     }
-}
 
-impl FromBytes for PUBLISH {
-    fn from_bytes(bytes: &Vec<u8>) -> Option<PUBLISH> {
-        let remaining_length = decode_remaining_length(bytes, 1);
+    fn from_bytes(bytes: &Vec<u8>) -> Option<CtrlPacket> {
+        match bytes[0] {
+            0x20 => {
+                match bytes.len() {
+                    4 => Some(CtrlPacket::CONNACK {
+                        session_present: bytes[2] == 1,
+                        connect_return_code: bytes[3]
+                    }),
+                    _ => None
+                }
+            },
+            0x30 => {
+                let remaining_length = decode_remaining_length(bytes, 1);
 
-        match remaining_length {
-            Some(decoded_remaining_length) => {
-                if decoded_remaining_length + 1 + remaining_length_length(decoded_remaining_length) as i32
-                        == bytes.len() as i32 {
-                    // TODO optimize
-                    let (_, variable_header_and_payload)
-                        = bytes.split_at((1 + remaining_length_length(decoded_remaining_length)) as usize);
-                    let topic_length = decode_string_length(&array_to_vec(variable_header_and_payload), 0);
-                    let (encoded_topic, _) = variable_header_and_payload.split_at((topic_length + 2) as usize);
-                    let (_, topic) = encoded_topic.split_at(2);
-                    let topic_as_string: String = String::from_utf8(array_to_vec(topic)).unwrap();
-                    let packet_id = (variable_header_and_payload[topic_length as usize] * 256) as i16 +
-                        variable_header_and_payload[(topic_length + 1) as usize] as i16;
-                    let(_, payload) = variable_header_and_payload.split_at((topic_length + 2) as usize);
-                    let payload_as_string = String::from_utf8(array_to_vec(payload)).unwrap();
+                match remaining_length {
+                    Some(decoded_remaining_length) => {
+                        if decoded_remaining_length + 1 + remaining_length_length(decoded_remaining_length) as i32
+                                == bytes.len() as i32 {
+                            // TODO optimize
+                            let (_, variable_header_and_payload)
+                                = bytes.split_at((1 + remaining_length_length(decoded_remaining_length)) as usize);
+                            let topic_length = decode_string_length(&array_to_vec(variable_header_and_payload), 0);
+                            let (encoded_topic, _) = variable_header_and_payload.split_at((topic_length + 2) as usize);
+                            let (_, topic) = encoded_topic.split_at(2);
+                            let topic_as_string: String = String::from_utf8(array_to_vec(topic)).unwrap();
+                            let packet_id = (variable_header_and_payload[topic_length as usize] * 256) as i16 +
+                                variable_header_and_payload[(topic_length + 1) as usize] as i16;
+                            let(_, payload) = variable_header_and_payload.split_at((topic_length + 2) as usize);
+                            let payload_as_string = String::from_utf8(array_to_vec(payload)).unwrap();
 
-                    // TODO parse all parameters properly
-                    Some(PUBLISH {
-                        packet_id: packet_id,
-                        topic: topic_as_string,
-                        payload: payload_as_string,
-                        duplicate_delivery: false,
-                        QoS: 0,
-                        retain: false
+                            // TODO parse all parameters properly
+                            Some(CtrlPacket::PUBLISH {
+                                packet_id: packet_id,
+                                topic: topic_as_string,
+                                payload: payload_as_string,
+                                duplicate_delivery: false,
+                                QoS: 0,
+                                retain: false
+                            })
+                        } else {
+                            None
+                        }
+                    },
+                    None => None
+                }
+            }
+            0x90 => {
+                if bytes.len() > 4 {
+                    Some(CtrlPacket::SUBACK {
+                        return_code: bytes[4]
                     })
                 } else {
                     None
                 }
             },
-            None => None
+            _ => None
         }
-
     }
 }
 
 // pub fn parse(ctrl_packet_as_bytes: &Vec<u8>) -> Option<Box<CtrlPacket+'static>> {
-pub fn parse(ctrl_packet_as_bytes: &Vec<u8>) -> Option<Box<CtrlPacket>> {
-    match ctrl_packet_as_bytes[0] {
-        0x20 => {
-            let result: Option<CONNACK> = CONNACK::from_bytes(ctrl_packet_as_bytes);
-            match result {
-                Some(packet) => Some(Box::new(packet)),
-                None => None
-            }
-        },
-        0x30 => {
-            let result: Option<PUBLISH> = PUBLISH::from_bytes(ctrl_packet_as_bytes);
-            match result {
-                Some(packet) => Some(Box::new(packet)),
-                None => None
-            }
-        }
-        0x90 => {
-            let result: Option<SUBACK> = SUBACK::from_bytes(ctrl_packet_as_bytes);
-            match result {
-                Some(packet) => Some(Box::new(packet)),
-                None => None
-            }
-        },
-        _ => None
-    }
+pub fn parse(ctrl_packet_as_bytes: &Vec<u8>) -> Option<CtrlPacket> {
+    CtrlPacket::from_bytes(ctrl_packet_as_bytes)
 }
 
 fn encode_remaining_length(input_length: usize) -> Vec<u8> {
