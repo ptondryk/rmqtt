@@ -371,76 +371,87 @@ fn array_to_vec(arr: &[u8]) -> Vec<u8> {
      arr.iter().cloned().collect()
 }
 
-#[test]
-fn test_encode_string1() {
-    let result: Vec<u8> = encode_string("TESTT");
-    assert_eq!(0x00, result[0]);
-    assert_eq!(0x05, result[1]);
-    assert_eq!(0x54, result[2]);
-    assert_eq!(0x45, result[3]);
-    assert_eq!(0x53, result[4]);
-    assert_eq!(0x54, result[5]);
-    assert_eq!(0x54, result[6]);
-}
+#[cfg(test)]
+mod tests {
 
-#[test]
-fn test_encode_string2() {
-    let result: Vec<u8> = encode_string("MQTT");
-    assert_eq!(0x00, result[0]);
-    assert_eq!(0x04, result[1]);
-    assert_eq!(0x4d, result[2]);
-    assert_eq!(0x51, result[3]);
-    assert_eq!(0x54, result[4]);
-    assert_eq!(0x54, result[5]);
-}
+    use super::*;
+    use super::encode_string;
+    use super::encode_remaining_length;
+    use super::decode_remaining_length;
+    use super::decode_string_length;
+    use super::insert_all;
 
-#[test]
-fn test_encode_remaining_length1() {
-    let result: Vec<u8> = encode_remaining_length(20);
-    assert_eq!(1, result.len());
-    assert_eq!(0x14, result[0]);
-}
+    #[test]
+    fn test_encode_string1() {
+        let result: Vec<u8> = encode_string("TESTT");
+        assert_eq!(0x00, result[0]);
+        assert_eq!(0x05, result[1]);
+        assert_eq!(0x54, result[2]);
+        assert_eq!(0x45, result[3]);
+        assert_eq!(0x53, result[4]);
+        assert_eq!(0x54, result[5]);
+        assert_eq!(0x54, result[6]);
+    }
 
-#[test]
-fn test_encode_remaining_length2() {
-    let result: Vec<u8> = encode_remaining_length(1307);
-    assert_eq!(2, result.len());
-    assert_eq!(0x9b, result[0]);
-    assert_eq!(0x0a, result[1]);
-}
+    #[test]
+    fn test_encode_string2() {
+        let result: Vec<u8> = encode_string("MQTT");
+        assert_eq!(0x00, result[0]);
+        assert_eq!(0x04, result[1]);
+        assert_eq!(0x4d, result[2]);
+        assert_eq!(0x51, result[3]);
+        assert_eq!(0x54, result[4]);
+        assert_eq!(0x54, result[5]);
+    }
 
-#[test]
-fn test_encode_remaining_length3() {
-    let result: Vec<u8> = encode_remaining_length(16387);
-    assert_eq!(3, result.len());
-    assert_eq!(0x83, result[0]);
-    assert_eq!(0x80, result[1]);
-    assert_eq!(0x01, result[2]);
-}
+    #[test]
+    fn test_encode_remaining_length1() {
+        let result: Vec<u8> = encode_remaining_length(20);
+        assert_eq!(1, result.len());
+        assert_eq!(0x14, result[0]);
+    }
 
-#[test]
-fn test_decode_remaining_length1() {
-    let encoded_remaining_length: Vec<u8> = encode_remaining_length(20);
-    assert_eq!(20, decode_remaining_length(&encoded_remaining_length, 0).unwrap());
-}
+    #[test]
+    fn test_encode_remaining_length2() {
+        let result: Vec<u8> = encode_remaining_length(1307);
+        assert_eq!(2, result.len());
+        assert_eq!(0x9b, result[0]);
+        assert_eq!(0x0a, result[1]);
+    }
 
-#[test]
-fn test_decode_remaining_length2() {
-    let encoded_remaining_length: Vec<u8> = encode_remaining_length(1307);
-    assert_eq!(1307, decode_remaining_length(&encoded_remaining_length, 0).unwrap());
-}
+    #[test]
+    fn test_encode_remaining_length3() {
+        let result: Vec<u8> = encode_remaining_length(16387);
+        assert_eq!(3, result.len());
+        assert_eq!(0x83, result[0]);
+        assert_eq!(0x80, result[1]);
+        assert_eq!(0x01, result[2]);
+    }
 
-#[test]
-fn test_decode_remaining_length3() {
-    let encoded_remaining_length: Vec<u8> = encode_remaining_length(16387);
-    assert_eq!(16387, decode_remaining_length(&encoded_remaining_length, 0).unwrap());
-}
+    #[test]
+    fn test_decode_remaining_length1() {
+        let encoded_remaining_length: Vec<u8> = encode_remaining_length(20);
+        assert_eq!(20, decode_remaining_length(&encoded_remaining_length, 0).unwrap());
+    }
 
-#[test]
-fn test_insert_all() {
-    let mut v1 = vec![0x01, 0x02, 0x03, 0x04];
-    let mut v2 = vec![0x05, 0x06, 0x07];
+    #[test]
+    fn test_decode_remaining_length2() {
+        let encoded_remaining_length: Vec<u8> = encode_remaining_length(1307);
+        assert_eq!(1307, decode_remaining_length(&encoded_remaining_length, 0).unwrap());
+    }
 
-    insert_all(v2, &mut v1, 2);
-    assert_eq!(v1, [0x01, 0x02, 0x05, 0x06, 0x07, 0x03, 0x04]);
+    #[test]
+    fn test_decode_remaining_length3() {
+        let encoded_remaining_length: Vec<u8> = encode_remaining_length(16387);
+        assert_eq!(16387, decode_remaining_length(&encoded_remaining_length, 0).unwrap());
+    }
+
+    #[test]
+    fn test_insert_all() {
+        let mut v1 = vec![0x01, 0x02, 0x03, 0x04];
+        let mut v2 = vec![0x05, 0x06, 0x07];
+
+        insert_all(v2, &mut v1, 2);
+        assert_eq!(v1, [0x01, 0x02, 0x05, 0x06, 0x07, 0x03, 0x04]);
+    }
 }
