@@ -25,7 +25,18 @@ pub enum CtrlPacket {
         QoS: u8,
         retain: bool
     },
-    PUBACK, PUBREC, PUBREL, PUBCOMP,
+    PUBACK {
+        packet_id: i16,
+    },
+    PUBREC {
+        packet_id: i16,
+    },
+    PUBREL {
+        packet_id: i16,
+    },
+    PUBCOMP {
+        packet_id: i16,
+    },
     SUBSCRIBE {
         topic_filter: String,
         QoS: u8,
@@ -76,7 +87,8 @@ impl CtrlPacket {
 
     pub fn as_bytes(self) -> Vec<u8> {
         match self {
-            CtrlPacket::CONNECT { clientId, topic, content, QoS, retain, username, password, clean_session, keep_alive } => {
+            CtrlPacket::CONNECT { clientId, topic, content, QoS, retain, username,
+                        password, clean_session, keep_alive } => {
                 let mut result: Vec<u8> = Vec::new();
 
                 // id = 1 and reserved flags = 0
@@ -209,6 +221,21 @@ impl CtrlPacket {
 
                 result
             },
+            CtrlPacket::PUBACK { packet_id } => {
+                let mut result: Vec<u8> = Vec::new();
+
+                // id = 4
+                result.push(0x40);
+
+                // remaining length, always = 2
+                result.push(0x02);
+
+                // packet identifier
+                result.push((packet_id / 256) as u8);
+                result.push(packet_id as u8);
+
+                result
+            }
             _ => {
                 // TODO implement
                 Vec::new()

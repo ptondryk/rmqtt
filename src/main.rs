@@ -126,51 +126,69 @@ impl MqttConnection {
 
     fn start_receive_thread(mqtt_connection: Arc<Mutex<MqttConnection>>) {
         loop {
-            match mqtt_connection.lock() {
-                Ok(ref locked_mqtt_connection) => {
-                    match locked_mqtt_connection.stream {
-                        Some(ref tcp_stream) => {
-                            let mut buffer: Vec<u8> = Vec::new();
-                            for byte in tcp_stream.bytes() {
-                                match byte {
-                                    Ok(received_byte) => {
-                                        buffer.push(received_byte);
-                                        let received_packet = mqtt::parse(&buffer);
-                                        match received_packet {
-                                            Some(packet) => {
-                                                println!("RECEIVED: {:?}", packet);
-                                                match packet {
-                                                    CtrlPacket::PUBLISH { packet_id,
-                                                            ref topic, ref payload,
-                                                            duplicate_delivery, QoS, retain } => {
-                                                        match locked_mqtt_connection.message_handlers.get(topic) {
-                                                            Some(handler) => {
-                                                                handler.handle_message(topic, payload);
-                                                            },
-                                                            None => {
-                                                                println!("No handler for {:?} registered.", topic);
-                                                            }
-                                                        }
-                                                    },
-                                                    _ => {}
-                                                }
-                                                buffer.clear();
+            match MqttConnection::try_receive_packet(mqtt_connection.clone()) {
+                Some(packet) => {
+                    match packet {
+                        CtrlPacket::PUBLISH { packet_id, ref topic, ref payload,
+                                duplicate_delivery, QoS, retain } => {
+                            match mqtt_connection.lock() {
+                                Ok(ref mut locked_mqtt_connection) => {
+                                    if QoS == 1 {
+                                        match locked_mqtt_connection.stream {
+                                            Some(ref mut tcp_stream) => {
+                                                tcp_stream.write(&(CtrlPacket::PUBACK {
+                                                    packet_id: packet_id
+                                                }).as_bytes().into_boxed_slice());
                                             },
                                             None => {}
                                         }
-                                    },
-                                    Err(error) => {
-                                        break;
                                     }
-                                }
+                                    match locked_mqtt_connection.message_handlers.get(topic) {
+                                        Some(handler) => {
+                                            handler.handle_message(topic, payload);
+                                        },
+                                        None => {
+                                            println!("No handler for {:?} registered.", topic);
+                                        }
+                                    }
+                                },
+                                Err(_) => {}
                             }
                         },
-                        None => {}
+                        _ => {}
                     }
                 },
-                Err(_) => { println!("lock error"); }
+                None => {}
             }
             thread::sleep(Duration::from_millis(3000));
+        }
+    }
+
+    fn try_receive_packet(mqtt_connection: Arc<Mutex<MqttConnection>>) -> Option<CtrlPacket> {
+        match mqtt_connection.lock() {
+            Ok(ref locked_mqtt_connection) => {
+                match locked_mqtt_connection.stream {
+                    Some(ref tcp_stream) => {
+                        let mut buffer: Vec<u8> = Vec::new();
+                        let mut packet: Option<CtrlPacket> = None;
+                        for byte in tcp_stream.bytes() {
+                            match byte {
+                                Ok(received_byte) => {
+                                    buffer.push(received_byte);
+                                    packet = mqtt::parse(&buffer);
+                                },
+                                Err(error) => {
+                                    break;
+                                }
+                            }
+                        }
+                        buffer.clear();
+                        packet
+                    },
+                    None => None
+                }
+            },
+            Err(_) => None
         }
     }
 }
