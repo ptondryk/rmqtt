@@ -235,7 +235,52 @@ impl CtrlPacket {
                 result.push(packet_id as u8);
 
                 result
-            }
+            },
+            CtrlPacket::PUBREC { packet_id } => {
+                let mut result: Vec<u8> = Vec::new();
+
+                // id = 5
+                result.push(0x50);
+
+                // remaining length, always = 2
+                result.push(0x02);
+
+                // packet identifier
+                result.push((packet_id / 256) as u8);
+                result.push(packet_id as u8);
+
+                result
+            },
+            CtrlPacket::PUBREL { packet_id } => {
+                let mut result: Vec<u8> = Vec::new();
+
+                // id = 6
+                result.push(0x60);
+
+                // remaining length, always = 2
+                result.push(0x02);
+
+                // packet identifier
+                result.push((packet_id / 256) as u8);
+                result.push(packet_id as u8);
+
+                result
+            },
+            CtrlPacket::PUBCOMP { packet_id } => {
+                let mut result: Vec<u8> = Vec::new();
+
+                // id = 7
+                result.push(0x70);
+
+                // remaining length, always = 2
+                result.push(0x02);
+
+                // packet identifier
+                result.push((packet_id / 256) as u8);
+                result.push(packet_id as u8);
+
+                result
+            },
             _ => {
                 // TODO implement
                 Vec::new()
@@ -288,7 +333,39 @@ impl CtrlPacket {
                     },
                     None => None
                 }
-            }
+            },
+            0x40 => {
+                match bytes.len() {
+                    4 => Some(CtrlPacket::PUBACK {
+                            packet_id: bytes[2] as i16 * 256 + bytes[3] as i16
+                        }),
+                    _ => None
+                }
+            },
+            0x50 => {
+                match bytes.len() {
+                    4 => Some(CtrlPacket::PUBREC {
+                            packet_id: bytes[2] as i16 * 256 + bytes[3] as i16
+                        }),
+                    _ => None
+                }
+            },
+            0x60 => {
+                match bytes.len() {
+                    4 => Some(CtrlPacket::PUBREL {
+                            packet_id: bytes[2] as i16 * 256 + bytes[3] as i16
+                        }),
+                    _ => None
+                }
+            },
+            0x70 => {
+                match bytes.len() {
+                    4 => Some(CtrlPacket::PUBCOMP {
+                            packet_id: bytes[2] as i16 * 256 + bytes[3] as i16
+                        }),
+                    _ => None
+                }
+            },
             0x90 => {
                 if bytes.len() > 4 {
                     Some(CtrlPacket::SUBACK {

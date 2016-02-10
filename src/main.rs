@@ -136,13 +136,23 @@ impl MqttConnection {
                                     if QoS == 1 {
                                         match locked_mqtt_connection.stream {
                                             Some(ref mut tcp_stream) => {
-                                                tcp_stream.write(&(CtrlPacket::PUBACK {
+                                                tcp_stream.write(&(CtrlPacket::PUBREC {
+                                                    packet_id: packet_id
+                                                }).as_bytes().into_boxed_slice());
+                                            },
+                                            None => {}
+                                        }
+                                    } else if QoS == 2 {
+                                        match locked_mqtt_connection.stream {
+                                            Some(ref mut tcp_stream) => {
+                                                tcp_stream.write(&(CtrlPacket::PUBREL {
                                                     packet_id: packet_id
                                                 }).as_bytes().into_boxed_slice());
                                             },
                                             None => {}
                                         }
                                     }
+                                    // TODO if QoS is 2, call handle_message not until PUBCOMP is received
                                     match locked_mqtt_connection.message_handlers.get(topic) {
                                         Some(handler) => {
                                             handler.handle_message(topic, payload);
@@ -150,6 +160,38 @@ impl MqttConnection {
                                         None => {
                                             println!("No handler for {:?} registered.", topic);
                                         }
+                                    }
+                                },
+                                Err(_) => {}
+                            }
+                        },
+                        CtrlPacket::PUBREC { packet_id } => {
+                            // TODO verify that a publish with this packet_id has been received
+                            match mqtt_connection.lock() {
+                                Ok(ref mut locked_mqtt_connection) => {
+                                    match locked_mqtt_connection.stream {
+                                        Some(ref mut tcp_stream) => {
+                                            tcp_stream.write(&(CtrlPacket::PUBREL {
+                                                packet_id: packet_id
+                                            }).as_bytes().into_boxed_slice());
+                                        },
+                                        None => {}
+                                    }
+                                },
+                                Err(_) => {}
+                            }
+                        },
+                        CtrlPacket::PUBREL { packet_id } => {
+                            // TODO verify that a publish with this packet_id has been sent
+                            match mqtt_connection.lock() {
+                                Ok(ref mut locked_mqtt_connection) => {
+                                    match locked_mqtt_connection.stream {
+                                        Some(ref mut tcp_stream) => {
+                                            tcp_stream.write(&(CtrlPacket::PUBCOMP {
+                                                packet_id: packet_id
+                                            }).as_bytes().into_boxed_slice());
+                                        },
+                                        None => {}
                                     }
                                 },
                                 Err(_) => {}
