@@ -38,6 +38,7 @@ pub enum CtrlPacket {
         packet_id: i16,
     },
     SUBSCRIBE {
+        // TODO allow more the one topic-subscribe within one subscribe-packet
         topic_filter: String,
         QoS: u8,
         packet_id: i16
@@ -281,6 +282,28 @@ impl CtrlPacket {
 
                 result
             },
+            CtrlPacket::PINGREQ => {
+                let mut result: Vec<u8> = Vec::new();
+
+                // id = 12
+                result.push(0xc0);
+
+                // remaining length, always = 0
+                result.push(0x00);
+
+                result
+            },
+            CtrlPacket::PINGRESP => {
+                let mut result: Vec<u8> = Vec::new();
+
+                // id = 13
+                result.push(0xd0);
+
+                // remaining length, always = 0
+                result.push(0x00);
+
+                result
+            },
             _ => {
                 // TODO implement
                 Vec::new()
@@ -375,6 +398,20 @@ impl CtrlPacket {
                     None
                 }
             },
+            0xc0 => {
+                if bytes.len() > 1 {
+                    Some(CtrlPacket::PINGREQ)
+                } else {
+                    None
+                }
+            },
+            0xd0 => {
+                if bytes.len() > 1 {
+                    Some(CtrlPacket::PINGRESP)
+                } else {
+                    None
+                }
+            }
             _ => None
         }
     }

@@ -1,3 +1,5 @@
+extern crate time;
+
 use std::io::prelude::*;
 use std::net::TcpStream;
 use std::thread;
@@ -59,7 +61,9 @@ impl Mqtt {
 struct MqttConnection {
     stream: Option<TcpStream>,
     packet_id: i16,
-    message_handlers: HashMap<String, Box<HandlesMessage>>
+    message_handlers: HashMap<String, Box<HandlesMessage>>,
+    keep_alive: i16,
+    last_message_sent: i64
 }
 
 impl MqttConnection {
@@ -68,11 +72,15 @@ impl MqttConnection {
             -> (Arc<Mutex<MqttConnection>>, JoinHandle<()>) {
         let stream = TcpStream::connect(host).unwrap();
         stream.set_read_timeout(Some(Duration::new(0, 10000)));
+        let current_timestamp_second = time::get_time().sec;
         let mut mqtt_connection = Arc::new(
                         Mutex::new(MqttConnection {
                                 packet_id: 0,
                                 stream: Some(stream),
-                                message_handlers: HashMap::new()
+                                message_handlers: HashMap::new(),
+                                // TODO set keep-alive properly
+                                keep_alive: 120,
+                                last_message_sent: current_timestamp_second
                             }
                         ));
 
@@ -115,6 +123,9 @@ impl MqttConnection {
         match self.stream {
             Some(ref mut tcp_stream) => {
                 let _ = tcp_stream.write(bytes);
+
+                // set the last-message timestamp to now
+                self.last_message_sent = time::get_time().sec;
                 true
             },
             None => {
@@ -201,6 +212,19 @@ impl MqttConnection {
                     }
                 },
                 None => {}
+            }
+
+            // keep alive check
+            match mqtt_connection.lock() {
+                Ok(ref mut locked_mqtt_connection) => {
+                    let current_timestamp_second = time::get_time().sec;
+                    if current_timestamp_second > locked_mqtt_connection.last_message_sent
+                                                    + locked_mqtt_connection.keep_alive as i64 {
+                        locked_mqtt_connection.send(&(CtrlPacket::PINGREQ)
+                                .as_bytes().into_boxed_slice());
+                    }
+                },
+                Err(_) => {}
             }
             thread::sleep(Duration::from_millis(3000));
         }
