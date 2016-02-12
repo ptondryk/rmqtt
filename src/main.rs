@@ -112,6 +112,13 @@ impl MqttConnection {
         self.message_handlers.insert(topic.to_string(), Box::new(handler));
     }
 
+    fn unsubscribe(&mut self, topic: &str) {
+        // send UNSUBSCRIBE packet to mqtt-broker
+        let new_packet_id = self.packet_id;
+        self.send(&CtrlPacket::new_unsubscribe(topic, new_packet_id).as_bytes().into_boxed_slice());
+        self.packet_id = self.packet_id + 1;
+    }
+
     fn publish(&mut self, topic: &str, payload: &str) {
         // send PUBLISH packet to mqtt-broker
         let new_packet_id = self.packet_id;
@@ -133,6 +140,11 @@ impl MqttConnection {
                 false
             }
         }
+    }
+
+    fn disconnect(&mut self) {
+        // send DISCONNECT packet to mqtt-broker
+        self.send(&(CtrlPacket::DISCONNECT).as_bytes().into_boxed_slice());
     }
 
     fn start_receive_thread(mqtt_connection: Arc<Mutex<MqttConnection>>) {

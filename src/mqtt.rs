@@ -38,15 +38,22 @@ pub enum CtrlPacket {
         packet_id: i16,
     },
     SUBSCRIBE {
-        // TODO allow more the one topic-subscribe within one subscribe-packet
-        topic_filter: String,
-        QoS: u8,
+        topic_filter: Vec<String>,
+        QoS: Vec<u8>,
         packet_id: i16
     },
     SUBACK {
+        packet_id: i16,
         return_code: u8
     },
-    UNSUBSCRIBE, UNSUBACK, PINGREQ, PINGRESP, DISCONNECT
+    UNSUBSCRIBE {
+        topic_filter: Vec<String>,
+        packet_id: i16
+    },
+    UNSUBACK {
+        packet_id: i16
+    },
+    PINGREQ, PINGRESP, DISCONNECT
 }
 
 impl CtrlPacket {
@@ -68,8 +75,15 @@ impl CtrlPacket {
 
     pub fn new_subscribe(topic: &str, QoS: u8, packet_id: i16) -> CtrlPacket {
         CtrlPacket::SUBSCRIBE {
-            topic_filter: topic.to_string(),
-            QoS: QoS,
+            topic_filter: vec![topic.to_string()],
+            QoS: vec![QoS],
+            packet_id: packet_id
+        }
+    }
+
+    pub fn new_unsubscribe(topic: &str, packet_id: i16) -> CtrlPacket {
+        CtrlPacket::UNSUBSCRIBE {
+            topic_filter: vec![topic.to_string()],
             packet_id: packet_id
         }
     }
@@ -189,11 +203,33 @@ impl CtrlPacket {
                 result.push((packet_id / 256) as u8);
                 result.push(packet_id as u8);
 
-                // topic name
-                result.append(&mut encode_string(&topic_filter));
+                for i in 0..topic_filter.len() {
+                    // topic name
+                    result.append(&mut encode_string(&topic_filter[i]));
 
-                // reserved & QoS
-                result.push(QoS);
+                    // reserved & QoS
+                    result.push(QoS[i]);
+                }
+
+                // encode "remaining length" and insert at the second position in result vector
+                insert_all(encode_remaining_length(result.len() - 1), &mut result, 1);
+
+                result
+            },
+            CtrlPacket::UNSUBSCRIBE { topic_filter, packet_id } => {
+                let mut result: Vec<u8> = Vec::new();
+
+                // id = 8 and reserved flags = 2
+                result.push(0xa2);
+
+                // packet identifier
+                result.push((packet_id / 256) as u8);
+                result.push(packet_id as u8);
+
+                for i in 0..(topic_filter.len() - 1) {
+                    // topic name
+                    result.append(&mut encode_string(&topic_filter[i]));
+                }
 
                 // encode "remaining length" and insert at the second position in result vector
                 insert_all(encode_remaining_length(result.len() - 1), &mut result, 1);
@@ -304,6 +340,17 @@ impl CtrlPacket {
 
                 result
             },
+            CtrlPacket::DISCONNECT => {
+                let mut result: Vec<u8> = Vec::new();
+
+                // id = 14
+                result.push(0xe0);
+
+                // remaining length, always = 0
+                result.push(0x00);
+
+                result
+            },
             _ => {
                 // TODO implement
                 Vec::new()
@@ -392,7 +439,17 @@ impl CtrlPacket {
             0x90 => {
                 if bytes.len() > 4 {
                     Some(CtrlPacket::SUBACK {
+                        packet_id: bytes[2] as i16 * 256 + bytes[3] as i16,
                         return_code: bytes[4]
+                    })
+                } else {
+                    None
+                }
+            },
+            0xb0 => {
+                if bytes.len() > 3 {
+                    Some(CtrlPacket::UNSUBACK {
+                        packet_id: bytes[2] as i16 * 256 + bytes[3] as i16
                     })
                 } else {
                     None
@@ -408,6 +465,13 @@ impl CtrlPacket {
             0xd0 => {
                 if bytes.len() > 1 {
                     Some(CtrlPacket::PINGRESP)
+                } else {
+                    None
+                }
+            },
+            0xe0 => {
+                if bytes.len() > 1 {
+                    Some(CtrlPacket::DISCONNECT)
                 } else {
                     None
                 }
