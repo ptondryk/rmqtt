@@ -6,7 +6,7 @@ pub enum CtrlPacket {
         clientId: String,
         topic: Option<String>,
         content: Option<String>,
-        QoS: Option<u8>,
+        qos: Option<u8>,
         retain: Option<bool>,
         username: Option<String>,
         password: Option<String>,
@@ -22,7 +22,7 @@ pub enum CtrlPacket {
         topic: String,
         payload: String,
         duplicate_delivery: bool,
-        QoS: u8,
+        qos: u8,
         retain: bool
     },
     PUBACK {
@@ -39,7 +39,7 @@ pub enum CtrlPacket {
     },
     SUBSCRIBE {
         topic_filter: Vec<String>,
-        QoS: Vec<u8>,
+        qos: Vec<u8>,
         packet_id: i16
     },
     SUBACK {
@@ -58,25 +58,10 @@ pub enum CtrlPacket {
 
 impl CtrlPacket {
 
-    pub fn new_connect_with_authentication(clientId: &str, username: &str, password: &str)
-                -> CtrlPacket {
-        CtrlPacket::CONNECT {
-            clientId: clientId.to_string(),
-            topic: None,
-            content: None,
-            QoS: None,
-            retain: None,
-            username: Some(username.to_string()),
-            password: Some(password.to_string()),
-            clean_session: false,
-            keep_alive: 10
-        }
-    }
-
-    pub fn new_subscribe(topic: &str, QoS: u8, packet_id: i16) -> CtrlPacket {
+    pub fn new_subscribe(topic: &str, qos: u8, packet_id: i16) -> CtrlPacket {
         CtrlPacket::SUBSCRIBE {
             topic_filter: vec![topic.to_string()],
-            QoS: vec![QoS],
+            qos: vec![qos],
             packet_id: packet_id
         }
     }
@@ -95,14 +80,14 @@ impl CtrlPacket {
             payload: payload.to_string(),
             // TODO set the values properly
             duplicate_delivery: false,
-            QoS: 0x00,
+            qos: 0x00,
             retain: false
         }
     }
 
     pub fn as_bytes(self) -> Vec<u8> {
         match self {
-            CtrlPacket::CONNECT { clientId, topic, content, QoS, retain, username,
+            CtrlPacket::CONNECT { clientId, topic, content, qos, retain, username,
                         password, clean_session, keep_alive } => {
                 let mut result: Vec<u8> = Vec::new();
 
@@ -128,10 +113,10 @@ impl CtrlPacket {
                     None => {}
                 }
 
-                // Will QoS
-                match QoS {
-                    Some(ref QoS) => {
-                        flags = flags + (QoS << 3);
+                // Will qos
+                match qos {
+                    Some(ref qos) => {
+                        flags = flags + (qos << 3);
                     },
                     None => {}
                 }
@@ -193,7 +178,7 @@ impl CtrlPacket {
 
                 result
             },
-            CtrlPacket::SUBSCRIBE { topic_filter, QoS, packet_id } => {
+            CtrlPacket::SUBSCRIBE { topic_filter, qos, packet_id } => {
                 let mut result: Vec<u8> = Vec::new();
 
                 // id = 8 and reserved flags = 2
@@ -207,8 +192,8 @@ impl CtrlPacket {
                     // topic name
                     result.append(&mut encode_string(&topic_filter[i]));
 
-                    // reserved & QoS
-                    result.push(QoS[i]);
+                    // reserved & qos
+                    result.push(qos[i]);
                 }
 
                 // encode "remaining length" and insert at the second position in result vector
@@ -236,11 +221,11 @@ impl CtrlPacket {
 
                 result
             },
-            CtrlPacket::PUBLISH { packet_id, topic, payload, duplicate_delivery, QoS, retain } => {
+            CtrlPacket::PUBLISH { packet_id, topic, payload, duplicate_delivery, qos, retain } => {
                 let mut result: Vec<u8> = Vec::new();
 
                 // id = 3
-                // TODO set DUP flag / QoS / retain flag properly
+                // TODO set DUP flag / qos / retain flag properly
                 result.push(0x30);
 
                 // topic name
@@ -359,124 +344,128 @@ impl CtrlPacket {
     }
 
     fn from_bytes(bytes: &Vec<u8>) -> Option<CtrlPacket> {
-        match bytes[0] {
-            0x20 => {
-                match bytes.len() {
-                    4 => Some(CtrlPacket::CONNACK {
-                        session_present: bytes[2] == 1,
-                        connect_return_code: bytes[3]
-                    }),
-                    _ => None
-                }
-            },
-            0x30 => {
-                let remaining_length = decode_remaining_length(bytes, 1);
+        if(bytes.len() > 0) {
+            match bytes[0] {
+                0x20 => {
+                    match bytes.len() {
+                        4 => Some(CtrlPacket::CONNACK {
+                            session_present: bytes[2] == 1,
+                            connect_return_code: bytes[3]
+                        }),
+                        _ => None
+                    }
+                },
+                0x30 => {
+                    let remaining_length = decode_remaining_length(bytes, 1);
 
-                match remaining_length {
-                    Some(decoded_remaining_length) => {
-                        if decoded_remaining_length + 1 + remaining_length_length(decoded_remaining_length) as i32
-                                == bytes.len() as i32 {
-                            // TODO optimize
-                            let (_, variable_header_and_payload)
-                                = bytes.split_at((1 + remaining_length_length(decoded_remaining_length)) as usize);
-                            let topic_length = decode_string_length(&array_to_vec(variable_header_and_payload), 0);
-                            let (encoded_topic, _) = variable_header_and_payload.split_at((topic_length + 2) as usize);
-                            let (_, topic) = encoded_topic.split_at(2);
-                            let topic_as_string: String = String::from_utf8(array_to_vec(topic)).unwrap();
-                            let packet_id = (variable_header_and_payload[topic_length as usize] * 256) as i16 +
-                                variable_header_and_payload[(topic_length + 1) as usize] as i16;
-                            let(_, payload) = variable_header_and_payload.split_at((topic_length + 2) as usize);
-                            let payload_as_string = String::from_utf8(array_to_vec(payload)).unwrap();
+                    match remaining_length {
+                        Some(decoded_remaining_length) => {
+                            if decoded_remaining_length + 1 + remaining_length_length(decoded_remaining_length) as i32
+                                    == bytes.len() as i32 {
+                                // TODO optimize
+                                let (_, variable_header_and_payload)
+                                    = bytes.split_at((1 + remaining_length_length(decoded_remaining_length)) as usize);
+                                let topic_length = decode_string_length(&array_to_vec(variable_header_and_payload), 0);
+                                let (encoded_topic, _) = variable_header_and_payload.split_at((topic_length + 2) as usize);
+                                let (_, topic) = encoded_topic.split_at(2);
+                                let topic_as_string: String = String::from_utf8(array_to_vec(topic)).unwrap();
+                                let packet_id = (variable_header_and_payload[topic_length as usize] * 256) as i16 +
+                                    variable_header_and_payload[(topic_length + 1) as usize] as i16;
+                                let(_, payload) = variable_header_and_payload.split_at((topic_length + 2) as usize);
+                                let payload_as_string = String::from_utf8(array_to_vec(payload)).unwrap();
 
-                            // TODO parse all parameters properly
-                            Some(CtrlPacket::PUBLISH {
-                                packet_id: packet_id,
-                                topic: topic_as_string,
-                                payload: payload_as_string,
-                                duplicate_delivery: false,
-                                QoS: 0,
-                                retain: false
-                            })
-                        } else {
-                            None
-                        }
-                    },
-                    None => None
-                }
-            },
-            0x40 => {
-                match bytes.len() {
-                    4 => Some(CtrlPacket::PUBACK {
+                                // TODO parse all parameters properly
+                                Some(CtrlPacket::PUBLISH {
+                                    packet_id: packet_id,
+                                    topic: topic_as_string,
+                                    payload: payload_as_string,
+                                    duplicate_delivery: false,
+                                    qos: 0,
+                                    retain: false
+                                })
+                            } else {
+                                None
+                            }
+                        },
+                        None => None
+                    }
+                },
+                0x40 => {
+                    match bytes.len() {
+                        4 => Some(CtrlPacket::PUBACK {
+                                packet_id: bytes[2] as i16 * 256 + bytes[3] as i16
+                            }),
+                        _ => None
+                    }
+                },
+                0x50 => {
+                    match bytes.len() {
+                        4 => Some(CtrlPacket::PUBREC {
+                                packet_id: bytes[2] as i16 * 256 + bytes[3] as i16
+                            }),
+                        _ => None
+                    }
+                },
+                0x60 => {
+                    match bytes.len() {
+                        4 => Some(CtrlPacket::PUBREL {
+                                packet_id: bytes[2] as i16 * 256 + bytes[3] as i16
+                            }),
+                        _ => None
+                    }
+                },
+                0x70 => {
+                    match bytes.len() {
+                        4 => Some(CtrlPacket::PUBCOMP {
+                                packet_id: bytes[2] as i16 * 256 + bytes[3] as i16
+                            }),
+                        _ => None
+                    }
+                },
+                0x90 => {
+                    if bytes.len() > 4 {
+                        Some(CtrlPacket::SUBACK {
+                            packet_id: bytes[2] as i16 * 256 + bytes[3] as i16,
+                            return_code: bytes[4]
+                        })
+                    } else {
+                        None
+                    }
+                },
+                0xb0 => {
+                    if bytes.len() > 3 {
+                        Some(CtrlPacket::UNSUBACK {
                             packet_id: bytes[2] as i16 * 256 + bytes[3] as i16
-                        }),
-                    _ => None
+                        })
+                    } else {
+                        None
+                    }
+                },
+                0xc0 => {
+                    if bytes.len() > 1 {
+                        Some(CtrlPacket::PINGREQ)
+                    } else {
+                        None
+                    }
+                },
+                0xd0 => {
+                    if bytes.len() > 1 {
+                        Some(CtrlPacket::PINGRESP)
+                    } else {
+                        None
+                    }
+                },
+                0xe0 => {
+                    if bytes.len() > 1 {
+                        Some(CtrlPacket::DISCONNECT)
+                    } else {
+                        None
+                    }
                 }
-            },
-            0x50 => {
-                match bytes.len() {
-                    4 => Some(CtrlPacket::PUBREC {
-                            packet_id: bytes[2] as i16 * 256 + bytes[3] as i16
-                        }),
-                    _ => None
-                }
-            },
-            0x60 => {
-                match bytes.len() {
-                    4 => Some(CtrlPacket::PUBREL {
-                            packet_id: bytes[2] as i16 * 256 + bytes[3] as i16
-                        }),
-                    _ => None
-                }
-            },
-            0x70 => {
-                match bytes.len() {
-                    4 => Some(CtrlPacket::PUBCOMP {
-                            packet_id: bytes[2] as i16 * 256 + bytes[3] as i16
-                        }),
-                    _ => None
-                }
-            },
-            0x90 => {
-                if bytes.len() > 4 {
-                    Some(CtrlPacket::SUBACK {
-                        packet_id: bytes[2] as i16 * 256 + bytes[3] as i16,
-                        return_code: bytes[4]
-                    })
-                } else {
-                    None
-                }
-            },
-            0xb0 => {
-                if bytes.len() > 3 {
-                    Some(CtrlPacket::UNSUBACK {
-                        packet_id: bytes[2] as i16 * 256 + bytes[3] as i16
-                    })
-                } else {
-                    None
-                }
-            },
-            0xc0 => {
-                if bytes.len() > 1 {
-                    Some(CtrlPacket::PINGREQ)
-                } else {
-                    None
-                }
-            },
-            0xd0 => {
-                if bytes.len() > 1 {
-                    Some(CtrlPacket::PINGRESP)
-                } else {
-                    None
-                }
-            },
-            0xe0 => {
-                if bytes.len() > 1 {
-                    Some(CtrlPacket::DISCONNECT)
-                } else {
-                    None
-                }
+                _ => None
             }
-            _ => None
+        } else {
+            None
         }
     }
 }

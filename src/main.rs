@@ -7,273 +7,219 @@ use std::sync::{Mutex, Arc};
 use std::str;
 use std::thread::JoinHandle;
 use std::time::Duration;
-use std::collections::HashMap;
 
 use mqtt::*;
 mod mqtt;
 
-trait HandlesMessage : Sync + Send {
-    fn handle_message(&self, topic: &str, message: &str);
+trait HandlesMessage {
+    fn handle_message(&self, mqtt_connection: &mut MqttConnection, topic: &str, message: &str);
 }
 
-struct Mqtt {
-    join_handler: JoinHandle<()>,
-    connection_wrapper: Arc<Mutex<MqttConnection>>
-}
-
-impl Mqtt {
-
-    fn connect(address: &str, settings: Option<MqttConnectionSettings>) -> Mqtt {
-        let (mqtt_connection, join_handler) = MqttConnection::connect(address, settings);
-        Mqtt {
-            connection_wrapper: mqtt_connection,
-            join_handler: join_handler
-        }
-    }
-
-    pub fn read_forever(self) {
-        self.join_handler.join();
-    }
-
-    fn subscribe<T: HandlesMessage+'static>(&mut self, topic: &str, handler: T) {
-        match self.connection_wrapper.lock() {
-            Ok(mut locked_connection) => {
-                locked_connection.subscribe(topic, handler);
-            },
-            Err(error) => {
-                println!("{:?}", error);
-            }
-        }
-    }
-
-    fn publish(&mut self, topic: &str, payload: &str) {
-        match self.connection_wrapper.lock() {
-            Ok(mut locked_connection) => {
-                locked_connection.publish(topic, payload);
-            },
-            Err(error) => {
-                println!("{:?}", error);
-            }
-        }
-    }
+struct MqttConnectionBuilder {
+    client_id: String,
+    host: String,
+    user: Option<String>,
+    password: Option<String>,
+    will_topic: Option<String>,
+    will_content: Option<String>,
+    will_qos: Option<u8>,
+    will_retain: Option<bool>,
+    clean_session: bool,
+    keep_alive: i16
 }
 
 struct MqttConnection {
-    stream: Option<TcpStream>,
     packet_id: i16,
-    message_handlers: HashMap<String, Box<HandlesMessage>>,
+    stream: TcpStream,
+    message_handler: Option<Box<HandlesMessage>>,
     keep_alive: i16,
     last_message_sent: i64
 }
 
-impl MqttConnection {
+impl MqttConnectionBuilder {
 
-    fn connect(host: &str, settings: Option<MqttConnectionSettings>)
-            -> (Arc<Mutex<MqttConnection>>, JoinHandle<()>) {
-        let stream = TcpStream::connect(host).unwrap();
-        stream.set_read_timeout(Some(Duration::new(0, 10000)));
-        let current_timestamp_second = time::get_time().sec;
-        let mut mqtt_connection = Arc::new(
-                        Mutex::new(MqttConnection {
-                                packet_id: 0,
-                                stream: Some(stream),
-                                message_handlers: HashMap::new(),
-                                // TODO set keep-alive properly
-                                keep_alive: 120,
-                                last_message_sent: current_timestamp_second
-                            }
-                        ));
-
-        // start the receive-thread
-        let mut child_mqtt_connection = mqtt_connection.clone();
-        let join_handler = thread::spawn(move || {
-            MqttConnection::start_receive_thread(child_mqtt_connection);
-        });
-
-        let shared_mqtt_connection = mqtt_connection.clone();
-
-        // send CONNECT packet to mqtt-broker
-        match settings {
-            Some(mqtt_settings) => {
-                shared_mqtt_connection.lock().unwrap().send(&CtrlPacket::new_connect_with_authentication("testClientId",
-                    &mqtt_settings.user, &mqtt_settings.password).as_bytes().into_boxed_slice());
-            }, None => {}
+    fn new(client_id: &str, host: &str) -> MqttConnectionBuilder {
+        MqttConnectionBuilder {
+            client_id: client_id.to_string(),
+            host: host.to_string(),
+            user: None,
+            password: None,
+            will_topic: None,
+            will_content: None,
+            will_qos: None,
+            will_retain: None,
+            clean_session: false,
+            keep_alive: 0
         }
-
-        // return the connection object and the join handle
-        (mqtt_connection.clone(), join_handler)
     }
 
-    fn subscribe<T: HandlesMessage+'static>(&mut self, topic: &str, handler: T) {
-        // send SUBSCRIBE packet to mqtt-broker
-        let new_packet_id = self.packet_id;
-        self.send(&CtrlPacket::new_subscribe(topic, 0, new_packet_id).as_bytes().into_boxed_slice());
-        self.packet_id = self.packet_id + 1;
-        self.message_handlers.insert(topic.to_string(), Box::new(handler));
+    fn credentials(&mut self, user: &str, password: &str) -> &mut MqttConnectionBuilder {
+        self.user = Some(user.to_string());
+        self.password = Some(password.to_string());
+        self
     }
 
-    fn unsubscribe(&mut self, topic: &str) {
-        // send UNSUBSCRIBE packet to mqtt-broker
-        let new_packet_id = self.packet_id;
-        self.send(&CtrlPacket::new_unsubscribe(topic, new_packet_id).as_bytes().into_boxed_slice());
-        self.packet_id = self.packet_id + 1;
+    fn will_message(&mut self, will_topic: &str, will_content:
+            &str, will_qos: u8, will_retain: bool) -> &mut MqttConnectionBuilder {
+        self.will_retain = Some(will_retain);
+        self.will_qos = Some(will_qos);
+        self.will_topic = Some(will_topic.to_string());
+        self.will_content = Some(will_content.to_string());
+        self
     }
 
-    fn publish(&mut self, topic: &str, payload: &str) {
-        // send PUBLISH packet to mqtt-broker
-        let new_packet_id = self.packet_id;
-        self.send(&CtrlPacket::new_publish(topic, payload, new_packet_id).as_bytes().into_boxed_slice());
-        self.packet_id = self.packet_id + 1;
+    // keep_alive in seconds
+    fn keep_alive(&mut self, keep_alive: i16) -> &mut MqttConnectionBuilder {
+        self.keep_alive = keep_alive;
+        self
     }
 
-    fn send(&mut self, bytes: &[u8]) -> bool {
-        match self.stream {
-            Some(ref mut tcp_stream) => {
-                let _ = tcp_stream.write(bytes);
+    fn clean_session(&mut self) -> &mut MqttConnectionBuilder {
+        self.clean_session = true;
+        self
+    }
 
-                // set the last-message timestamp to now
-                self.last_message_sent = time::get_time().sec;
-                true
-            },
-            None => {
-                panic!("Can't subscribe! Connect first!");
-                false
+    fn connect<T: HandlesMessage+'static>(&self, handler: T) -> Result<MqttConnection, &str> {
+        let stream = TcpStream::connect(&*self.host).unwrap();
+        stream.set_read_timeout(Some(Duration::new(0, 10000)));
+
+        let connect: CtrlPacket = CtrlPacket::CONNECT {
+            clientId: self.client_id.clone(),
+            topic: self.will_topic.clone(),
+            content: self.will_content.clone(),
+            qos: self.will_qos.clone(),
+            retain: self.will_retain.clone(),
+            username: self.user.clone(),
+            password: self.password.clone(),
+            clean_session: self.clean_session,
+            keep_alive: self.keep_alive
+        };
+
+        let mut new_mqtt_connection = MqttConnection {
+            packet_id: 0,
+            stream: stream,
+            message_handler: Some(Box::new(handler)),
+            keep_alive: self.keep_alive,
+            last_message_sent: time::get_time().sec
+        };
+
+        new_mqtt_connection.send(connect);
+        match new_mqtt_connection.receive() {
+            Ok(received_packet) => {
+                // TODO verify that received packet is "successful" CONNACK
+            }, Err(_) => {
+                // TODO connect should return Err in this case
             }
         }
+
+        Ok(new_mqtt_connection)
+    }
+}
+
+impl MqttConnection {
+
+    // send SUBSCRIBE packet to mqtt-broker
+    fn subscribe(&mut self, topic: &str, qos: u8) {
+        let next_packet_id = self.next_packet_id();
+        self.send(CtrlPacket::new_subscribe(topic, qos, next_packet_id));
     }
 
+    // send UNSUBSCRIBE packet to mqtt-broker
+    fn unsubscribe(&mut self, topic: &str) {
+        let next_packet_id = self.next_packet_id();
+        self.send(CtrlPacket::new_unsubscribe(topic, next_packet_id));
+    }
+
+    // send PUBLISH packet to mqtt-broker
+    fn publish(&mut self, topic: &str, payload: &str) {
+        let next_packet_id = self.next_packet_id();
+        self.send(CtrlPacket::new_publish(topic, payload, next_packet_id));
+    }
+
+    // send DISCONNECT packet to mqtt-broker
     fn disconnect(&mut self) {
-        // send DISCONNECT packet to mqtt-broker
-        self.send(&(CtrlPacket::DISCONNECT).as_bytes().into_boxed_slice());
+        self.send(CtrlPacket::DISCONNECT);
     }
 
-    fn start_receive_thread(mqtt_connection: Arc<Mutex<MqttConnection>>) {
+    fn next_packet_id(&mut self) -> i16 {
+        self.packet_id = self.packet_id + 1;
+        self.packet_id
+    }
+
+    fn send(&mut self, ctrl_packet: CtrlPacket) {
+        let bytes: &[u8] = &ctrl_packet.as_bytes().into_boxed_slice();
+        let _ = self.stream.write(bytes);
+
+        // set the last-message timestamp to now
+        self.last_message_sent = time::get_time().sec;
+    }
+
+    fn block_main_thread_and_receive(&mut self) {
         loop {
-            match MqttConnection::try_receive_packet(mqtt_connection.clone()) {
-                Some(packet) => {
+            match self.receive() {
+                Ok(packet) => {
                     match packet {
                         CtrlPacket::PUBLISH { packet_id, ref topic, ref payload,
-                                duplicate_delivery, QoS, retain } => {
-                            match mqtt_connection.lock() {
-                                Ok(ref mut locked_mqtt_connection) => {
-                                    if QoS == 1 {
-                                        match locked_mqtt_connection.stream {
-                                            Some(ref mut tcp_stream) => {
-                                                tcp_stream.write(&(CtrlPacket::PUBREC {
-                                                    packet_id: packet_id
-                                                }).as_bytes().into_boxed_slice());
-                                            },
-                                            None => {}
-                                        }
-                                    } else if QoS == 2 {
-                                        match locked_mqtt_connection.stream {
-                                            Some(ref mut tcp_stream) => {
-                                                tcp_stream.write(&(CtrlPacket::PUBREL {
-                                                    packet_id: packet_id
-                                                }).as_bytes().into_boxed_slice());
-                                            },
-                                            None => {}
-                                        }
-                                    }
-                                    // TODO if QoS is 2, call handle_message not until PUBCOMP is received
-                                    match locked_mqtt_connection.message_handlers.get(topic) {
-                                        Some(handler) => {
-                                            handler.handle_message(topic, payload);
-                                        },
-                                        None => {
-                                            println!("No handler for {:?} registered.", topic);
-                                        }
-                                    }
-                                },
-                                Err(_) => {}
+                                    duplicate_delivery, qos, retain } => {
+                            if qos == 1 {
+                                self.send(CtrlPacket::PUBREC {
+                                    packet_id: packet_id
+                                });
+                            } else if qos == 2 {
+                                self.send(CtrlPacket::PUBREL {
+                                    packet_id: packet_id
+                                });
                             }
+                            // TODO if qos is 2, call handle_message not until PUBCOMP is received
+                            self.forward_message_to_handler(topic, payload);
+
                         },
                         CtrlPacket::PUBREC { packet_id } => {
                             // TODO verify that a publish with this packet_id has been received
-                            match mqtt_connection.lock() {
-                                Ok(ref mut locked_mqtt_connection) => {
-                                    match locked_mqtt_connection.stream {
-                                        Some(ref mut tcp_stream) => {
-                                            tcp_stream.write(&(CtrlPacket::PUBREL {
-                                                packet_id: packet_id
-                                            }).as_bytes().into_boxed_slice());
-                                        },
-                                        None => {}
-                                    }
-                                },
-                                Err(_) => {}
-                            }
+                            self.send(CtrlPacket::PUBREL {
+                                packet_id: packet_id
+                            });
                         },
                         CtrlPacket::PUBREL { packet_id } => {
                             // TODO verify that a publish with this packet_id has been sent
-                            match mqtt_connection.lock() {
-                                Ok(ref mut locked_mqtt_connection) => {
-                                    match locked_mqtt_connection.stream {
-                                        Some(ref mut tcp_stream) => {
-                                            tcp_stream.write(&(CtrlPacket::PUBCOMP {
-                                                packet_id: packet_id
-                                            }).as_bytes().into_boxed_slice());
-                                        },
-                                        None => {}
-                                    }
-                                },
-                                Err(_) => {}
-                            }
+                            self.send(CtrlPacket::PUBCOMP {
+                                packet_id: packet_id
+                            });
                         },
                         _ => {}
                     }
                 },
-                None => {}
+                Err(_) => {}
             }
 
             // keep alive check
-            match mqtt_connection.lock() {
-                Ok(ref mut locked_mqtt_connection) => {
-                    let current_timestamp_second = time::get_time().sec;
-                    if current_timestamp_second > locked_mqtt_connection.last_message_sent
-                                                    + locked_mqtt_connection.keep_alive as i64 {
-                        locked_mqtt_connection.send(&(CtrlPacket::PINGREQ)
-                                .as_bytes().into_boxed_slice());
-                    }
-                },
-                Err(_) => {}
+            let current_timestamp_second = time::get_time().sec;
+            if current_timestamp_second > self.last_message_sent + self.keep_alive as i64 {
+                self.send(CtrlPacket::PINGREQ);
             }
-            thread::sleep(Duration::from_millis(3000));
+            thread::sleep(Duration::from_millis(500));
         }
     }
 
-    fn try_receive_packet(mqtt_connection: Arc<Mutex<MqttConnection>>) -> Option<CtrlPacket> {
-        match mqtt_connection.lock() {
-            Ok(ref locked_mqtt_connection) => {
-                match locked_mqtt_connection.stream {
-                    Some(ref tcp_stream) => {
-                        let mut buffer: Vec<u8> = Vec::new();
-                        let mut packet: Option<CtrlPacket> = None;
-                        for byte in tcp_stream.bytes() {
-                            match byte {
-                                Ok(received_byte) => {
-                                    buffer.push(received_byte);
-                                    packet = mqtt::parse(&buffer);
-                                },
-                                Err(error) => {
-                                    break;
-                                }
-                            }
-                        }
-                        buffer.clear();
-                        packet
-                    },
-                    None => None
-                }
-            },
-            Err(_) => None
+    fn receive(&mut self) -> Result<CtrlPacket, &str> {
+        let mut buffer: Vec<u8> = Vec::new();
+        let mut packet: Option<CtrlPacket> = None;
+        while packet.is_none() {
+            self.stream.read_to_end(&mut buffer);
+            packet = mqtt::parse(&buffer);
+            thread::sleep(Duration::from_millis(500));
+        }
+        Ok(packet.unwrap())
+    }
+
+    fn forward_message_to_handler(&mut self, topic: &str, payload: &str) {
+        match self.message_handler {
+            Some(ref mut handler) => {
+                // TODO implement
+                // handler.handle_message(self, topic, payload);
+            }, None => {}
         }
     }
-}
-
-struct MqttConnectionSettings {
-    user: String,
-    password: String
 }
 
 struct ExampleHandler {
@@ -285,19 +231,23 @@ impl ExampleHandler {
 }
 
 impl HandlesMessage for ExampleHandler {
-    fn handle_message(&self, topic: &str, message: &str) {
+    fn handle_message(&self, mqtt_connection: &mut MqttConnection, topic: &str, message: &str) {
         println!("topic: {:?}, message: {:?}", topic, message);
     }
 }
 
 fn main() {
-    let mut m = Mqtt::connect("localhost:1883", Some(MqttConnectionSettings {
-                                                    user: "system".to_string(),
-                                                    password: "manager".to_string()
-                                                }));
-    m.subscribe("testTopic1", ExampleHandler {
-        example_var: 1
-    });
-    m.publish("testTopic2", "lalalalalala");
-    m.read_forever();
+    match MqttConnectionBuilder::new("test-client-01", "localhost:1883")
+            .credentials("system", "manager")
+            .keep_alive(120)
+            .connect(ExampleHandler {
+                example_var: 1
+            }) {
+        Ok(ref mut mqtt_connection) => {
+            mqtt_connection.subscribe("testTopic1", 0 as u8);
+            mqtt_connection.publish("testTopic2", "lalalalalala");
+            mqtt_connection.block_main_thread_and_receive();
+        },
+        Err(_) => {}
+    }
 }
