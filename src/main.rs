@@ -24,6 +24,7 @@ struct MqttConnectionBuilder {
     will_content: Option<String>,
     will_qos: Option<u8>,
     will_retain: Option<bool>,
+    messages_handler: Option<Box<HandlesMessage>>,
     clean_session: bool,
     keep_alive: i16
 }
@@ -31,7 +32,7 @@ struct MqttConnectionBuilder {
 struct MqttConnection {
     packet_id: i16,
     stream: TcpStream,
-    message_handler: Option<Box<HandlesMessage>>,
+    messages_handler: Option<Box<HandlesMessage>>,
     keep_alive: i16,
     last_message_sent: i64
 }
@@ -48,19 +49,20 @@ impl MqttConnectionBuilder {
             will_content: None,
             will_qos: None,
             will_retain: None,
+            messages_handler: None,
             clean_session: false,
             keep_alive: 0
         }
     }
 
-    fn credentials(&mut self, user: &str, password: &str) -> &mut MqttConnectionBuilder {
+    fn credentials(mut self, user: &str, password: &str) -> MqttConnectionBuilder {
         self.user = Some(user.to_string());
         self.password = Some(password.to_string());
         self
     }
 
-    fn will_message(&mut self, will_topic: &str, will_content:
-            &str, will_qos: u8, will_retain: bool) -> &mut MqttConnectionBuilder {
+    fn will_message(mut self, will_topic: &str, will_content:
+            &str, will_qos: u8, will_retain: bool) -> MqttConnectionBuilder {
         self.will_retain = Some(will_retain);
         self.will_qos = Some(will_qos);
         self.will_topic = Some(will_topic.to_string());
@@ -69,28 +71,34 @@ impl MqttConnectionBuilder {
     }
 
     // keep_alive in seconds
-    fn keep_alive(&mut self, keep_alive: i16) -> &mut MqttConnectionBuilder {
+    fn keep_alive(mut self, keep_alive: i16) -> MqttConnectionBuilder {
         self.keep_alive = keep_alive;
         self
     }
 
-    fn clean_session(&mut self) -> &mut MqttConnectionBuilder {
+    fn clean_session(mut self) -> MqttConnectionBuilder {
         self.clean_session = true;
         self
     }
 
-    fn connect<T: HandlesMessage+'static>(&self, handler: T) -> Result<MqttConnection, &str> {
+    fn set_messages_handler<T: HandlesMessage+'static>(mut self, handler: T)
+            -> MqttConnectionBuilder {
+        self.messages_handler = Some(Box::new(handler));
+        self
+    }
+
+    fn connect(self) -> Result<MqttConnection, String> {
         let stream = TcpStream::connect(&*self.host).unwrap();
         stream.set_read_timeout(Some(Duration::new(0, 10000)));
 
         let connect: CtrlPacket = CtrlPacket::CONNECT {
-            clientId: self.client_id.clone(),
-            topic: self.will_topic.clone(),
-            content: self.will_content.clone(),
-            qos: self.will_qos.clone(),
-            retain: self.will_retain.clone(),
-            username: self.user.clone(),
-            password: self.password.clone(),
+            clientId: self.client_id,
+            topic: self.will_topic,
+            content: self.will_content,
+            qos: self.will_qos,
+            retain: self.will_retain,
+            username: self.user,
+            password: self.password,
             clean_session: self.clean_session,
             keep_alive: self.keep_alive
         };
@@ -98,7 +106,7 @@ impl MqttConnectionBuilder {
         let mut new_mqtt_connection = MqttConnection {
             packet_id: 0,
             stream: stream,
-            message_handler: Some(Box::new(handler)),
+            messages_handler: self.messages_handler,
             keep_alive: self.keep_alive,
             last_message_sent: time::get_time().sec
         };
@@ -213,7 +221,7 @@ impl MqttConnection {
     }
 
     fn forward_message_to_handler(&mut self, topic: &str, payload: &str) {
-        match self.message_handler {
+        match self.messages_handler {
             Some(ref mut handler) => {
                 // TODO implement
                 // handler.handle_message(self, topic, payload);
@@ -240,9 +248,10 @@ fn main() {
     match MqttConnectionBuilder::new("test-client-01", "localhost:1883")
             .credentials("system", "manager")
             .keep_alive(120)
-            .connect(ExampleHandler {
+            .set_messages_handler(ExampleHandler {
                 example_var: 1
-            }) {
+            })
+            .connect() {
         Ok(ref mut mqtt_connection) => {
             mqtt_connection.subscribe("testTopic1", 0 as u8);
             mqtt_connection.publish("testTopic2", "lalalalalala");
