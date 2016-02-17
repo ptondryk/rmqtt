@@ -344,7 +344,7 @@ impl CtrlPacket {
     }
 
     fn from_bytes(bytes: &Vec<u8>) -> Option<CtrlPacket> {
-        if(bytes.len() > 0) {
+        if bytes.len() > 0 {
             match bytes[0] {
                 0x20 => {
                     match bytes.len() {
