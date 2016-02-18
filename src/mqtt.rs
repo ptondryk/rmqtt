@@ -86,11 +86,11 @@ impl CtrlPacket {
     }
 
     pub fn as_bytes(self) -> Vec<u8> {
+        let mut result: Vec<u8> = Vec::new();
+
         match self {
             CtrlPacket::CONNECT { clientId, topic, content, qos, retain, username,
                         password, clean_session, keep_alive } => {
-                let mut result: Vec<u8> = Vec::new();
-
                 // id = 1 and reserved flags = 0
                 result.push(0x10);
 
@@ -172,15 +172,8 @@ impl CtrlPacket {
 
                 // add flags to the result
                 result.insert(9, flags);
-
-                // encode "remaining length" and insert at the second position in result vector
-                insert_all(encode_remaining_length(result.len() - 1), &mut result, 1);
-
-                result
             },
             CtrlPacket::SUBSCRIBE { topic_filter, qos, packet_id } => {
-                let mut result: Vec<u8> = Vec::new();
-
                 // id = 8 and reserved flags = 2
                 result.push(0x82);
 
@@ -195,15 +188,8 @@ impl CtrlPacket {
                     // reserved & qos
                     result.push(qos[i]);
                 }
-
-                // encode "remaining length" and insert at the second position in result vector
-                insert_all(encode_remaining_length(result.len() - 1), &mut result, 1);
-
-                result
             },
             CtrlPacket::UNSUBSCRIBE { topic_filter, packet_id } => {
-                let mut result: Vec<u8> = Vec::new();
-
                 // id = 8 and reserved flags = 2
                 result.push(0xa2);
 
@@ -215,15 +201,8 @@ impl CtrlPacket {
                     // topic name
                     result.append(&mut encode_string(&topic_filter[i]));
                 }
-
-                // encode "remaining length" and insert at the second position in result vector
-                insert_all(encode_remaining_length(result.len() - 1), &mut result, 1);
-
-                result
             },
             CtrlPacket::PUBLISH { packet_id, topic, payload, duplicate_delivery, qos, retain } => {
-                let mut result: Vec<u8> = Vec::new();
-
                 // id = 3
                 // TODO set DUP flag / qos / retain flag properly
                 result.push(0x30);
@@ -237,110 +216,58 @@ impl CtrlPacket {
 
                 // payload
                 result.append(&mut array_to_vec(payload.as_bytes()));
-
-                // encode "remaining length" and insert at the second position in result vector
-                insert_all(encode_remaining_length(result.len() - 1), &mut result, 1);
-
-                result
             },
             CtrlPacket::PUBACK { packet_id } => {
-                let mut result: Vec<u8> = Vec::new();
-
                 // id = 4
                 result.push(0x40);
 
-                // remaining length, always = 2
-                result.push(0x02);
-
                 // packet identifier
                 result.push((packet_id / 256) as u8);
                 result.push(packet_id as u8);
-
-                result
             },
             CtrlPacket::PUBREC { packet_id } => {
-                let mut result: Vec<u8> = Vec::new();
-
                 // id = 5
                 result.push(0x50);
 
-                // remaining length, always = 2
-                result.push(0x02);
-
                 // packet identifier
                 result.push((packet_id / 256) as u8);
                 result.push(packet_id as u8);
-
-                result
             },
             CtrlPacket::PUBREL { packet_id } => {
-                let mut result: Vec<u8> = Vec::new();
-
                 // id = 6
                 result.push(0x60);
 
-                // remaining length, always = 2
-                result.push(0x02);
-
                 // packet identifier
                 result.push((packet_id / 256) as u8);
                 result.push(packet_id as u8);
-
-                result
             },
             CtrlPacket::PUBCOMP { packet_id } => {
-                let mut result: Vec<u8> = Vec::new();
-
                 // id = 7
                 result.push(0x70);
 
-                // remaining length, always = 2
-                result.push(0x02);
-
                 // packet identifier
                 result.push((packet_id / 256) as u8);
                 result.push(packet_id as u8);
-
-                result
             },
             CtrlPacket::PINGREQ => {
-                let mut result: Vec<u8> = Vec::new();
-
                 // id = 12
                 result.push(0xc0);
-
-                // remaining length, always = 0
-                result.push(0x00);
-
-                result
             },
             CtrlPacket::PINGRESP => {
-                let mut result: Vec<u8> = Vec::new();
-
                 // id = 13
                 result.push(0xd0);
-
-                // remaining length, always = 0
-                result.push(0x00);
-
-                result
             },
             CtrlPacket::DISCONNECT => {
-                let mut result: Vec<u8> = Vec::new();
-
                 // id = 14
                 result.push(0xe0);
-
-                // remaining length, always = 0
-                result.push(0x00);
-
-                result
             },
-            _ => {
-                // TODO implement
-                Vec::new()
-            }
+            _ => {}
         }
+
+        // encode "remaining length" and insert at the second position in result vector
+        insert_all(encode_remaining_length(result.len() - 1), &mut result, 1);
+
+        result
     }
 
     fn from_bytes(bytes: &Vec<u8>) -> Option<CtrlPacket> {
