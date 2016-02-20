@@ -18,9 +18,9 @@ pub enum CtrlPacket {
         connect_return_code: u8
     },
     PUBLISH {
-        packet_id: i16,
+        packet_id: Option<i16>,
         topic: String,
-        payload: String,
+        payload: Vec<u8>,
         duplicate_delivery: bool,
         qos: u8,
         retain: bool
@@ -73,11 +73,11 @@ impl CtrlPacket {
         }
     }
 
-    pub fn new_publish(topic: &str, payload: &str, packet_id: i16) -> CtrlPacket {
+    pub fn new_publish(topic: &str, payload: Vec<u8>, packet_id: i16) -> CtrlPacket {
         CtrlPacket::PUBLISH {
-            packet_id: packet_id,
+            packet_id: None,
             topic: topic.to_string(),
-            payload: payload.to_string(),
+            payload: payload,
             // TODO set the values properly
             duplicate_delivery: false,
             qos: 0x00,
@@ -202,7 +202,8 @@ impl CtrlPacket {
                     result.append(&mut encode_string(&topic_filter[i]));
                 }
             },
-            CtrlPacket::PUBLISH { packet_id, topic, payload, duplicate_delivery, qos, retain } => {
+            CtrlPacket::PUBLISH { packet_id, topic, mut payload, duplicate_delivery, qos, retain }
+                    => {
                 // id = 3
                 // TODO set DUP flag / qos / retain flag properly
                 result.push(0x30);
@@ -211,11 +212,15 @@ impl CtrlPacket {
                 result.append(&mut encode_string(&topic));
 
                 // packet identifier
-                result.push((packet_id / 256) as u8);
-                result.push(packet_id as u8);
+                match packet_id {
+                    Some(packet_id_value) => {
+                        result.push((packet_id_value / 256) as u8);
+                        result.push(packet_id_value as u8);
+                    }, None => {}
+                }
 
                 // payload
-                result.append(&mut array_to_vec(payload.as_bytes()));
+                result.append(&mut payload);
             },
             CtrlPacket::PUBACK { packet_id } => {
                 // id = 4
@@ -270,7 +275,7 @@ impl CtrlPacket {
         result
     }
 
-    fn from_bytes(bytes: &Vec<u8>) -> Option<CtrlPacket> {
+    fn from_bytes(bytes: &mut Vec<u8>) -> Option<CtrlPacket> {
         if bytes.len() > 0 {
             match bytes[0] {
                 0x20 => {
@@ -282,33 +287,48 @@ impl CtrlPacket {
                         _ => None
                     }
                 },
-                0x30 => {
+                0x30 ... 0x3f => {
                     let remaining_length = decode_remaining_length(bytes, 1);
 
                     match remaining_length {
                         Some(decoded_remaining_length) => {
-                            if decoded_remaining_length + 1 + remaining_length_length(decoded_remaining_length) as i32
-                                    == bytes.len() as i32 {
-                                // TODO optimize
-                                let (_, variable_header_and_payload)
-                                    = bytes.split_at((1 + remaining_length_length(decoded_remaining_length)) as usize);
-                                let topic_length = decode_string_length(&array_to_vec(variable_header_and_payload), 0);
-                                let (encoded_topic, _) = variable_header_and_payload.split_at((topic_length + 2) as usize);
-                                let (_, topic) = encoded_topic.split_at(2);
-                                let topic_as_string: String = String::from_utf8(array_to_vec(topic)).unwrap();
-                                let packet_id = (variable_header_and_payload[topic_length as usize] * 256) as i16 +
-                                    variable_header_and_payload[(topic_length + 1) as usize] as i16;
-                                let(_, payload) = variable_header_and_payload.split_at((topic_length + 2) as usize);
-                                let payload_as_string = String::from_utf8(array_to_vec(payload)).unwrap();
 
-                                // TODO parse all parameters properly
+                            let remaining_length_length: i8 =
+                                    remaining_length_length(decoded_remaining_length);
+
+                            if decoded_remaining_length + 1 + remaining_length_length as i32
+                                    == bytes.len() as i32 {
+
+                                let duplicate_delivery: bool = bytes[0] & 0x08 > 0;
+                                let qos: u8 = (bytes[0] & 0x06) / 2;
+                                let retain: bool = bytes[0] & 0x01 > 0;
+
+                                // remove the packet type and remaining length bytes
+                                bytes.drain(0..(1 + remaining_length_length as usize));
+
+                                // parse topic
+                                let topic_length: usize =
+                                        decode_string_length(&bytes.drain(0..2).collect());
+                                let topic: String =
+                                        String::from_utf8(bytes.drain(0..topic_length).collect())
+                                            .unwrap();
+
+                                // parse packet id
+                                let mut packet_id = None;
+                                if qos > 0 {
+                                    packet_id = Some(parse_packet_id(&bytes.drain(0..2).collect()));
+                                }
+
+                                // parse payload
+                                let payload = bytes.drain(..).collect();
+
                                 Some(CtrlPacket::PUBLISH {
                                     packet_id: packet_id,
-                                    topic: topic_as_string,
-                                    payload: payload_as_string,
-                                    duplicate_delivery: false,
-                                    qos: 0,
-                                    retain: false
+                                    topic: topic,
+                                    payload: payload,
+                                    duplicate_delivery: duplicate_delivery,
+                                    qos: qos,
+                                    retain: retain
                                 })
                             } else {
                                 None
@@ -398,8 +418,12 @@ impl CtrlPacket {
 }
 
 // pub fn parse(ctrl_packet_as_bytes: &Vec<u8>) -> Option<Box<CtrlPacket+'static>> {
-pub fn parse(ctrl_packet_as_bytes: &Vec<u8>) -> Option<CtrlPacket> {
+pub fn parse(ctrl_packet_as_bytes: &mut Vec<u8>) -> Option<CtrlPacket> {
     CtrlPacket::from_bytes(ctrl_packet_as_bytes)
+}
+
+fn parse_packet_id(packet_id_as_bytes: &Vec<u8>) -> i16 {
+    packet_id_as_bytes[0] as i16 * 256 + packet_id_as_bytes[1] as i16
 }
 
 fn encode_remaining_length(input_length: usize) -> Vec<u8> {
@@ -421,6 +445,7 @@ fn encode_remaining_length(input_length: usize) -> Vec<u8> {
     result
 }
 
+// TODO return the number of bytes that are used to encode the "remaining length"
 fn decode_remaining_length(remaining_length: &Vec<u8>, offset: i8) -> Option<i32> {
     let mut multiplier: i32 = 1;
     let mut value: i32 = 0;
@@ -449,7 +474,7 @@ fn decode_remaining_length(remaining_length: &Vec<u8>, offset: i8) -> Option<i32
     Some(value)
 }
 
-fn remaining_length_length(remaining_length: i32) -> i16 {
+fn remaining_length_length(remaining_length: i32) -> i8 {
     match remaining_length {
         0...127 => 1,
         128...16383 => 2,
@@ -476,9 +501,9 @@ fn encode_string(string_to_encode: &str) -> Vec<u8> {
     result
 }
 
-fn decode_string_length(bytes: &Vec<u8>, offset: i8) -> i16 {
-    let mut decoded_string_length: i16 = bytes[offset as usize] as i16 * 256 as i16;
-    decoded_string_length += bytes[offset as usize + 1] as i16;
+fn decode_string_length(bytes: &Vec<u8>) -> usize {
+    let mut decoded_string_length: usize = bytes[0] as usize * 256 as usize;
+    decoded_string_length += bytes[1] as usize;
     decoded_string_length
 }
 

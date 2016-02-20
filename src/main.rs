@@ -12,7 +12,7 @@ use mqtt::*;
 mod mqtt;
 
 trait HandlesMessage {
-    fn handle_message(&mut self, mqtt_connection: &mut MqttConnection, topic: &str, message: &str);
+    fn handle_message(&mut self, mqtt_connection: &mut MqttConnection, topic: &str, payload: &Vec<u8>);
 }
 
 struct MqttSessionBuilder {
@@ -142,12 +142,12 @@ impl MqttSession {
                         CtrlPacket::PUBLISH { packet_id, ref topic, ref payload,
                                     duplicate_delivery, qos, retain } => {
                             if qos == 1 {
-                                self.send(CtrlPacket::PUBREC {
-                                    packet_id: packet_id
+                                self.send(CtrlPacket::PUBACK {
+                                    packet_id: packet_id.unwrap()
                                 });
                             } else if qos == 2 {
-                                self.send(CtrlPacket::PUBREL {
-                                    packet_id: packet_id
+                                self.send(CtrlPacket::PUBREC {
+                                    packet_id: packet_id.unwrap()
                                 });
                             }
                             // TODO if qos is 2, call handle_message not until PUBCOMP is received
@@ -182,7 +182,7 @@ impl MqttSession {
         }
     }
 
-    fn forward_message_to_handler(&mut self, topic: &str, payload: &str) {
+    fn forward_message_to_handler(&mut self, topic: &str, payload: &Vec<u8>) {
         match self.messages_handler {
             Some(ref mut handler) => {
                 handler.handle_message(&mut self.connection, topic, payload);
@@ -200,7 +200,7 @@ impl MqttSession {
         self.send(CtrlPacket::new_unsubscribe(topic, next_packet_id));
     }
 
-    fn publish(&mut self, topic: &str, payload: &str) {
+    fn publish(&mut self, topic: &str, payload: Vec<u8>) {
         let next_packet_id = self.connection.next_packet_id();
         self.send(CtrlPacket::new_publish(topic, payload, next_packet_id));
     }
@@ -234,7 +234,7 @@ impl MqttConnection {
     }
 
     // send PUBLISH packet to mqtt-broker
-    fn publish(&mut self, topic: &str, payload: &str) {
+    fn publish(&mut self, topic: &str, payload: Vec<u8>) {
         let next_packet_id = self.next_packet_id();
         self.send(CtrlPacket::new_publish(topic, payload, next_packet_id));
     }
@@ -261,8 +261,10 @@ impl MqttConnection {
         let mut buffer: Vec<u8> = Vec::new();
         let mut packet: Option<CtrlPacket> = None;
         while packet.is_none() {
+            // TODO read single bytes to avoid
+            // that I read bytes of second packet and "forget" them
             self.stream.read_to_end(&mut buffer);
-            packet = mqtt::parse(&buffer);
+            packet = mqtt::parse(&mut buffer);
             thread::sleep(Duration::from_millis(500));
         }
         Ok(packet.unwrap())
@@ -279,8 +281,8 @@ impl ExampleHandler {
 }
 
 impl HandlesMessage for ExampleHandler {
-    fn handle_message(&mut self, mqtt_connection: &mut MqttConnection, topic: &str, message: &str) {
-        println!("topic: {:?}, message: {:?}", topic, message);
+    fn handle_message(&mut self, mqtt_connection: &mut MqttConnection, topic: &str, payload: &Vec<u8>) {
+        println!("topic: {:?}, message: {:?}", topic, str::from_utf8(payload).unwrap());
     }
 }
 
@@ -294,7 +296,7 @@ fn main() {
             .connect() {
         Ok(ref mut mqtt_session) => {
             mqtt_session.subscribe("testTopic1", 0 as u8);
-            mqtt_session.publish("testTopic2", "lalalalalala");
+            mqtt_session.publish("testTopic2", "lalalalalala".to_string().into_bytes());
             mqtt_session.block_main_thread_and_receive();
         },
         Err(_) => {}
