@@ -15,7 +15,7 @@ pub enum CtrlPacket {
     },
     CONNACK {
         session_present: bool,
-        connect_return_code: u8
+        return_code: u8
     },
     PUBLISH {
         packet_id: Option<i16>,
@@ -73,14 +73,15 @@ impl CtrlPacket {
         }
     }
 
-    pub fn new_publish(topic: &str, payload: Vec<u8>, packet_id: i16) -> CtrlPacket {
+    pub fn new_publish(topic: &str, payload: Vec<u8>, packet_id: i16, qos: u8) -> CtrlPacket {
+        // TODO verify that qos has proper value (0, 1 or 2)
         CtrlPacket::PUBLISH {
             packet_id: None,
             topic: topic.to_string(),
             payload: payload,
+            qos: qos,
             // TODO set the values properly
             duplicate_delivery: false,
-            qos: 0x00,
             retain: false
         }
     }
@@ -282,7 +283,7 @@ impl CtrlPacket {
                     match bytes.len() {
                         4 => Some(CtrlPacket::CONNACK {
                             session_present: bytes[2] == 1,
-                            connect_return_code: bytes[3]
+                            return_code: bytes[3]
                         }),
                         _ => None
                     }
