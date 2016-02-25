@@ -12,11 +12,7 @@ use std::collections::HashMap;
 use mqtt::*;
 mod mqtt;
 
-trait HandlesMessage {
-    fn handle_message(&mut self, mqtt_connection: &mut MqttConnection, topic: &str, payload: &Vec<u8>);
-}
-
-struct MqttSessionBuilder {
+struct MqttConnectionBuilder {
     client_id: String,
     host: String,
     user: Option<String>,
@@ -25,14 +21,8 @@ struct MqttSessionBuilder {
     will_content: Option<String>,
     will_qos: Option<u8>,
     will_retain: Option<bool>,
-    messages_handler: Option<Box<HandlesMessage>>,
     clean_session: bool,
     keep_alive: i16
-}
-
-struct MqttSession {
-    connection: MqttConnection,
-    messages_handler: Option<Box<HandlesMessage>>
 }
 
 struct MqttConnection {
@@ -59,10 +49,15 @@ enum PublishState {
     Complete
 }
 
-impl MqttSessionBuilder {
+struct ReceivedMessage {
+    topic: String,
+    payload: Vec<u8>
+}
 
-    fn new(client_id: &str, host: &str) -> MqttSessionBuilder {
-        MqttSessionBuilder {
+impl MqttConnectionBuilder {
+
+    fn new(client_id: &str, host: &str) -> MqttConnectionBuilder {
+        MqttConnectionBuilder {
             client_id: client_id.to_string(),
             host: host.to_string(),
             user: None,
@@ -71,20 +66,19 @@ impl MqttSessionBuilder {
             will_content: None,
             will_qos: None,
             will_retain: None,
-            messages_handler: None,
             clean_session: false,
             keep_alive: 0
         }
     }
 
-    fn credentials(mut self, user: &str, password: &str) -> MqttSessionBuilder {
+    fn credentials(mut self, user: &str, password: &str) -> MqttConnectionBuilder {
         self.user = Some(user.to_string());
         self.password = Some(password.to_string());
         self
     }
 
     fn will_message(mut self, will_topic: &str, will_content: &str,
-            will_qos: u8, will_retain: bool) -> MqttSessionBuilder {
+            will_qos: u8, will_retain: bool) -> MqttConnectionBuilder {
         self.will_retain = Some(will_retain);
         self.will_qos = Some(will_qos);
         self.will_topic = Some(will_topic.to_string());
@@ -93,23 +87,17 @@ impl MqttSessionBuilder {
     }
 
     // keep_alive in seconds
-    fn keep_alive(mut self, keep_alive: i16) -> MqttSessionBuilder {
+    fn keep_alive(mut self, keep_alive: i16) -> MqttConnectionBuilder {
         self.keep_alive = keep_alive;
         self
     }
 
-    fn clean_session(mut self) -> MqttSessionBuilder {
+    fn clean_session(mut self) -> MqttConnectionBuilder {
         self.clean_session = true;
         self
     }
 
-    fn set_messages_handler<T: HandlesMessage+'static>(mut self, handler: T)
-            -> MqttSessionBuilder {
-        self.messages_handler = Some(Box::new(handler));
-        self
-    }
-
-    fn connect(self) -> Result<MqttSession, &'static str> {
+    fn connect(self) -> Result<MqttConnection, &'static str> {
 
         // connect to the mqtt broker
         let stream = TcpStream::connect(&*self.host).unwrap();
@@ -142,10 +130,7 @@ impl MqttSessionBuilder {
             CtrlPacket::CONNACK {session_present, return_code} => {
                 match return_code {
                     0x00 => {
-                        Ok(MqttSession {
-                            connection: new_mqtt_connection,
-                            messages_handler: self.messages_handler
-                        })
+                        Ok(new_mqtt_connection)
                     },
                     0x01 => {
                         Err("Connection Refused, unacceptable protocol version")
@@ -173,95 +158,6 @@ impl MqttSessionBuilder {
             }
         }
     }
-}
-
-impl MqttSession {
-
-    fn block_main_thread_and_receive(&mut self) {
-        loop {
-            match self.receive() {
-                Ok(packet) => {
-                    match packet {
-                        CtrlPacket::PUBLISH { packet_id, ref topic, ref payload,
-                                    duplicate_delivery, qos, retain } => {
-                            if qos == 1 {
-                                self.send(CtrlPacket::PUBACK {
-                                    packet_id: packet_id.unwrap()
-                                });
-                            } else if qos == 2 {
-                                self.send(CtrlPacket::PUBREC {
-                                    packet_id: packet_id.unwrap()
-                                });
-                            }
-                            // TODO if qos is 2, call handle_message not until PUBCOMP is received
-                            self.forward_message_to_handler(topic, payload);
-
-                        },
-                        CtrlPacket::PUBREC { packet_id } => {
-                            // TODO verify that a publish with this packet_id has been received
-                            self.send(CtrlPacket::PUBREL {
-                                packet_id: packet_id
-                            });
-                        },
-                        CtrlPacket::PUBREL { packet_id } => {
-                            // TODO verify that a publish with this packet_id has been sent
-                            self.send(CtrlPacket::PUBCOMP {
-                                packet_id: packet_id
-                            });
-                        },
-                        _ => {}
-                    }
-                },
-                Err(_) => {
-                    // TODO reconnect if error occured because of connection lost
-                }
-            }
-
-            // keep alive check
-            let current_timestamp_second = time::get_time().sec;
-            if current_timestamp_second >
-                    self.connection.last_message_sent + self.connection.keep_alive as i64 {
-                self.send(CtrlPacket::PINGREQ);
-            }
-            thread::sleep(Duration::from_millis(500));
-        }
-    }
-
-    fn forward_message_to_handler(&mut self, topic: &str, payload: &Vec<u8>) {
-        match self.messages_handler {
-            Some(ref mut handler) => {
-                handler.handle_message(&mut self.connection, topic, payload);
-            }, None => {}
-        }
-    }
-
-    fn subscribe(&mut self, topic: &str, qos: u8) {
-        let next_packet_id = self.connection.next_packet_id();
-        self.send(CtrlPacket::new_subscribe(topic, qos, next_packet_id));
-    }
-
-    fn unsubscribe(&mut self, topic: &str) {
-        let next_packet_id = self.connection.next_packet_id();
-        self.send(CtrlPacket::new_unsubscribe(topic, next_packet_id));
-    }
-
-    fn publish(&mut self, topic: &str, payload: Vec<u8>, qos: u8)  {
-        let next_packet_id = self.connection.next_packet_id();
-        self.send(CtrlPacket::new_publish(topic, payload, next_packet_id, qos));
-    }
-
-    fn disconnect(&mut self) {
-        self.send(CtrlPacket::DISCONNECT);
-    }
-
-    fn send(&mut self, ctrl_packet: CtrlPacket) {
-        self.connection.send(ctrl_packet);
-    }
-
-    fn receive(&mut self) -> Result<CtrlPacket, &str> {
-        self.connection.receive()
-    }
-
 }
 
 impl MqttConnection {
@@ -326,34 +222,89 @@ impl MqttConnection {
         Ok(packet.unwrap())
     }
 
-}
-
-struct ExampleHandler {
-    example_var: i16
-}
-
-impl ExampleHandler {
-
-}
-
-impl HandlesMessage for ExampleHandler {
-    fn handle_message(&mut self, mqtt_connection: &mut MqttConnection, topic: &str, payload: &Vec<u8>) {
-        println!("topic: {:?}, message: {:?}", topic, str::from_utf8(payload).unwrap());
+    fn await_message(&mut self) -> ReceivedMessage {
+        self.block_main_thread_and_receive()
     }
+
+    fn await_message_with_timeout(&mut self, timeout: i16) -> Option<ReceivedMessage> {
+        // TODO implement timeout
+        Some(self.await_message())
+    }
+
+    fn block_main_thread_and_receive(&mut self) -> ReceivedMessage {
+        loop {
+            match self.receive() {
+                Ok(packet) => {
+                    match packet {
+                        CtrlPacket::PUBLISH { packet_id, topic, payload,
+                                    duplicate_delivery, qos, retain } => {
+                            if qos == 1 {
+                                self.send(CtrlPacket::PUBACK {
+                                    packet_id: packet_id.unwrap()
+                                });
+                            } else if qos == 2 {
+                                self.send(CtrlPacket::PUBREC {
+                                    packet_id: packet_id.unwrap()
+                                });
+                            }
+                            // TODO if qos is 2, do not return message until PUBCOMP is received
+                            return ReceivedMessage::new(topic, payload);
+                        },
+                        CtrlPacket::PUBREC { packet_id } => {
+                            // TODO verify that a publish with this packet_id has been received
+                            self.send(CtrlPacket::PUBREL {
+                                packet_id: packet_id
+                            });
+                        },
+                        CtrlPacket::PUBREL { packet_id } => {
+                            // TODO verify that a publish with this packet_id has been sent
+                            self.send(CtrlPacket::PUBCOMP {
+                                packet_id: packet_id
+                            });
+                        },
+                        _ => {}
+                    }
+                },
+                Err(_) => {
+                    // TODO reconnect if error occured because of connection lost
+                }
+            }
+
+            // keep alive check
+            let current_timestamp_second = time::get_time().sec;
+            if current_timestamp_second > self.last_message_sent + self.keep_alive as i64 {
+                self.send(CtrlPacket::PINGREQ);
+            }
+            thread::sleep(Duration::from_millis(500));
+        }
+    }
+
+}
+
+impl ReceivedMessage {
+
+    fn new(topic: String, payload: Vec<u8>) -> ReceivedMessage {
+        ReceivedMessage {
+            topic: topic,
+            payload: payload
+        }
+    }
+
 }
 
 fn main() {
-    match MqttSessionBuilder::new("test-client-01", "localhost:1883")
+    match MqttConnectionBuilder::new("test-client-01", "localhost:1883")
             .credentials("system", "manager")
             .keep_alive(120)
-            .set_messages_handler(ExampleHandler {
-                example_var: 1
-            })
             .connect() {
         Ok(ref mut mqtt_session) => {
             mqtt_session.subscribe("testTopic1", 0 as u8);
             mqtt_session.publish("testTopic2", "lalalalalala".to_string().into_bytes(), 0);
-            mqtt_session.block_main_thread_and_receive();
+            loop {
+                let message = mqtt_session.await_message();
+                println!("topic = {:?}, payload = {:?}", message.topic,
+                    String::from_utf8(message.payload).unwrap());
+            }
         },
         Err(_) => {}
     }
