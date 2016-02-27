@@ -1,11 +1,9 @@
 extern crate time;
 
-use std::io::prelude::*;
 use std::net::TcpStream;
+use std::io::prelude::*;
 use std::thread;
-use std::sync::{Mutex, Arc};
 use std::str;
-use std::thread::JoinHandle;
 use std::time::Duration;
 use std::collections::HashMap;
 
@@ -30,6 +28,7 @@ struct MqttConnection {
     stream: TcpStream,
     keep_alive: i16,
     last_message_sent: i64,
+    received: Vec<ReceivedMessage>,
     published: HashMap<i16, PublishToken>
 }
 
@@ -47,6 +46,17 @@ enum PublishState {
     Received,
     Release,
     Complete
+}
+
+enum PublishResult {
+    Ready,
+    NotComplete {
+        packet_id: i16
+    }
+}
+
+enum RmqttError {
+    Timeout
 }
 
 struct ReceivedMessage {
@@ -109,6 +119,7 @@ impl MqttConnectionBuilder {
             stream: stream,
             keep_alive: self.keep_alive,
             last_message_sent: time::get_time().sec,
+            received: Vec::new(),
             published: HashMap::new()
         };
 
@@ -126,7 +137,7 @@ impl MqttConnectionBuilder {
         });
 
         // try receive CONNACK
-        match new_mqtt_connection.receive().unwrap() {
+        match new_mqtt_connection.receive(None).unwrap() {
             CtrlPacket::CONNACK {session_present, return_code} => {
                 match return_code {
                     0x00 => {
@@ -166,6 +177,7 @@ impl MqttConnection {
     fn subscribe(&mut self, topic: &str, qos: u8) {
         let next_packet_id = self.next_packet_id();
         self.send(CtrlPacket::new_subscribe(topic, qos, next_packet_id));
+        // TODO await SUBACK
     }
 
     // send UNSUBSCRIBE packet to mqtt-broker
@@ -175,10 +187,10 @@ impl MqttConnection {
     }
 
     // send PUBLISH packet to mqtt-broker
-    fn publish(&mut self, topic: &str, payload: Vec<u8>, qos: u8) {
-        let next_packet_id = self.next_packet_id();
+    fn publish(&mut self, topic: &str, payload: Vec<u8>, qos: u8) -> PublishResult {
         match qos {
             1 | 2 => {
+                let next_packet_id = self.next_packet_id();
                 self.published.insert(next_packet_id, PublishToken {
                     topic: topic.to_string(),
                     payload: payload.clone(),
@@ -186,9 +198,13 @@ impl MqttConnection {
                     qos: qos,
                     last_message: 0
                 });
-            }, _ => {}
+                self.send(CtrlPacket::new_publish(topic, payload, next_packet_id, qos));
+                PublishResult::NotComplete { packet_id: next_packet_id }
+            }, _ => {
+                self.send(CtrlPacket::new_publish_qos0(topic, payload));
+                PublishResult::Ready
+            }
         }
-        self.send(CtrlPacket::new_publish(topic, payload, next_packet_id, qos));
     }
 
     // send DISCONNECT packet to mqtt-broker
@@ -209,32 +225,68 @@ impl MqttConnection {
         self.last_message_sent = time::get_time().sec;
     }
 
-    fn receive(&mut self) -> Result<CtrlPacket, &str> {
-        let mut buffer: Vec<u8> = Vec::new();
-        let mut packet: Option<CtrlPacket> = None;
-        while packet.is_none() {
-            // TODO read single bytes to avoid
-            // that I read bytes of second packet and "forget" them
-            self.stream.read_to_end(&mut buffer);
-            packet = mqtt::parse(&mut buffer);
-            thread::sleep(Duration::from_millis(500));
-        }
-        Ok(packet.unwrap())
-    }
-
-    fn await_message(&mut self) -> ReceivedMessage {
-        self.block_main_thread_and_receive()
-    }
-
-    fn await_message_with_timeout(&mut self, timeout: i16) -> Option<ReceivedMessage> {
-        // TODO implement timeout
-        Some(self.await_message())
-    }
-
-    fn block_main_thread_and_receive(&mut self) -> ReceivedMessage {
+    fn await_new_message(&mut self) -> ReceivedMessage {
         loop {
-            match self.receive() {
-                Ok(packet) => {
+            match self.received.pop() {
+                Some(received_message) => {
+                    // TODO adjust packet id to the packet id from received message
+                    return received_message;
+                }, None => {}
+            }
+            self.await_event(None);
+        }
+    }
+
+    // timeout considers only second-part of the Duration
+    // TODO should I check the nanosecond part too?
+    fn await_new_message_with_timeout(&mut self, timeout: &Duration) -> Option<ReceivedMessage> {
+        let finish_timestamp_sec = time::get_time().sec + timeout.as_secs() as i64;
+        loop {
+            match self.received.pop() {
+                Some(received_message) => {
+                    return Some(received_message);
+                }, None => {}
+            }
+            self.await_event(Some(finish_timestamp_sec));
+
+            // TODO use std::time::Instant when stable
+            if time::get_time().sec >= finish_timestamp_sec {
+                return None;
+            }
+        }
+    }
+
+    // TODO add timeout
+    fn await_publish_completion(&mut self, packet_id: i16) -> PublishResult {
+        loop {
+            match self.published.get(&packet_id) {
+                Some(published_token) => {
+                    match published_token.publish_state {
+                        PublishState::Acknowledgement => {
+                            // TODO qos is hopefully 1 in this case
+                            return PublishResult::Ready;
+                        },
+                        PublishState::Complete => {
+                            // TODO qos is hopefully 2 in this case
+                            return PublishResult::Ready;
+                        },
+                        _ => {}
+                    }
+                }, None => {
+                    // no message with given id sent
+                    // TODO what should I do in this case?
+                    return PublishResult::Ready;
+                }
+            }
+            self.await_event(None);
+        }
+    }
+
+    // timeout - time to which this method should end
+    fn await_event(&mut self, timeout: Option<i64>) {
+        loop {
+            match self.receive(timeout) {
+                Some(packet) => {
                     match packet {
                         CtrlPacket::PUBLISH { packet_id, topic, payload,
                                     duplicate_delivery, qos, retain } => {
@@ -248,7 +300,8 @@ impl MqttConnection {
                                 });
                             }
                             // TODO if qos is 2, do not return message until PUBCOMP is received
-                            return ReceivedMessage::new(topic, payload);
+                            self.received.push(ReceivedMessage::new(topic, payload));
+                            break;
                         },
                         CtrlPacket::PUBREC { packet_id } => {
                             // TODO verify that a publish with this packet_id has been received
@@ -265,9 +318,7 @@ impl MqttConnection {
                         _ => {}
                     }
                 },
-                Err(_) => {
-                    // TODO reconnect if error occured because of connection lost
-                }
+                None => {}
             }
 
             // keep alive check
@@ -275,8 +326,40 @@ impl MqttConnection {
             if current_timestamp_second > self.last_message_sent + self.keep_alive as i64 {
                 self.send(CtrlPacket::PINGREQ);
             }
+            // TODO optimize the timeout check
+            match timeout {
+                Some(finish_timestamp_sec) => {
+                    if time::get_time().sec >= finish_timestamp_sec {
+                        break;
+                    }
+                }, None => {}
+            }
+
             thread::sleep(Duration::from_millis(500));
         }
+    }
+
+    // TODO reconnect if error occured because of connection lost
+    fn receive(&mut self, timeout: Option<i64>) -> Option<CtrlPacket> {
+        let mut buffer: Vec<u8> = Vec::new();
+        let mut packet: Option<CtrlPacket> = None;
+        while packet.is_none() {
+            // TODO read single bytes to avoid
+            // that I read bytes of second packet and "forget" them
+            self.stream.read_to_end(&mut buffer);
+            packet = mqtt::parse(&mut buffer);
+
+            // TODO optimize the timeout check
+            match timeout {
+                Some(finish_timestamp_sec) => {
+                    if time::get_time().sec >= finish_timestamp_sec {
+                        break;
+                    }
+                }, None => {}
+            }
+            thread::sleep(Duration::from_millis(500));
+        }
+        packet
     }
 
 }
@@ -301,9 +384,14 @@ fn main() {
             mqtt_session.subscribe("testTopic1", 0 as u8);
             mqtt_session.publish("testTopic2", "lalalalalala".to_string().into_bytes(), 0);
             loop {
-                let message = mqtt_session.await_message();
-                println!("topic = {:?}, payload = {:?}", message.topic,
-                    String::from_utf8(message.payload).unwrap());
+                match mqtt_session.await_new_message_with_timeout(&Duration::new(5, 0)) {
+                    Some(message) => {
+                        println!("topic = {:?}, payload = {:?}", message.topic,
+                            String::from_utf8(message.payload).unwrap());
+                    }, None => {
+                        println!("Nothing received within last 5 seconds", );
+                    }
+                }
             }
         },
         Err(_) => {}

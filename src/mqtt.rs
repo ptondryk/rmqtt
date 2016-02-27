@@ -73,10 +73,22 @@ impl CtrlPacket {
         }
     }
 
-    pub fn new_publish(topic: &str, payload: Vec<u8>, packet_id: i16, qos: u8) -> CtrlPacket {
-        // TODO verify that qos has proper value (0, 1 or 2)
+    pub fn new_publish_qos0(topic: &str, payload: Vec<u8>) -> CtrlPacket {
         CtrlPacket::PUBLISH {
             packet_id: None,
+            topic: topic.to_string(),
+            payload: payload,
+            qos: 0,
+            // TODO set the values properly
+            duplicate_delivery: false,
+            retain: false
+        }
+    }
+
+    pub fn new_publish(topic: &str, payload: Vec<u8>, packet_id: i16, qos: u8) -> CtrlPacket {
+        // TODO verify that qos has proper value (1 or 2)
+        CtrlPacket::PUBLISH {
+            packet_id: Some(packet_id),
             topic: topic.to_string(),
             payload: payload,
             qos: qos,
@@ -203,8 +215,8 @@ impl CtrlPacket {
                     result.append(&mut encode_string(&topic_filter[i]));
                 }
             },
-            CtrlPacket::PUBLISH { packet_id, topic, mut payload, duplicate_delivery, qos, retain }
-                    => {
+            CtrlPacket::PUBLISH { packet_id, topic, mut payload,
+                    duplicate_delivery, qos, retain } => {
                 // id = 3
                 // TODO set DUP flag / qos / retain flag properly
                 result.push(0x30);
@@ -213,11 +225,13 @@ impl CtrlPacket {
                 result.append(&mut encode_string(&topic));
 
                 // packet identifier
-                match packet_id {
-                    Some(packet_id_value) => {
-                        result.push((packet_id_value / 256) as u8);
-                        result.push(packet_id_value as u8);
-                    }, None => {}
+                if qos != 0 {
+                    match packet_id {
+                        Some(packet_id_value) => {
+                            result.push((packet_id_value / 256) as u8);
+                            result.push(packet_id_value as u8);
+                        }, None => {}
+                    }
                 }
 
                 // payload
