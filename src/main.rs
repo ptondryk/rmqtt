@@ -230,6 +230,7 @@ impl MqttConnection {
             match self.received.pop() {
                 Some(received_message) => {
                     // TODO adjust packet id to the packet id from received message
+                    // TODO return message only if it has been already acknowlegded/completed (qos 1/2)
                     return received_message;
                 }, None => {}
             }
@@ -244,6 +245,7 @@ impl MqttConnection {
         loop {
             match self.received.pop() {
                 Some(received_message) => {
+                    // TODO return message only if it has been already acknowlegded/completed (qos 1/2)
                     return Some(received_message);
                 }, None => {}
             }
@@ -299,21 +301,42 @@ impl MqttConnection {
                                     packet_id: packet_id.unwrap()
                                 });
                             }
-                            // TODO if qos is 2, do not return message until PUBCOMP is received
                             self.received.push(ReceivedMessage::new(topic, payload));
                             break;
                         },
+                        // TODO what to do if I receive PUBACK/COMP/.. with id that I dont know?
+                        // TODO is it possible?
+                        CtrlPacket::PUBACK { packet_id } => {
+                            match self.published.get(&packet_id) {
+                                Some(published_token) => {
+                                    published_token.publish_state =
+                                        PublishState::Acknowledgement
+                                }, None => {}
+                            }
+                        },
                         CtrlPacket::PUBREC { packet_id } => {
-                            // TODO verify that a publish with this packet_id has been received
+                            match self.published.get(&packet_id) {
+                                Some(published_token) => {
+                                    published_token.publish_state =
+                                        PublishState::Received
+                                }, None => {}
+                            }
                             self.send(CtrlPacket::PUBREL {
                                 packet_id: packet_id
                             });
                         },
                         CtrlPacket::PUBREL { packet_id } => {
-                            // TODO verify that a publish with this packet_id has been sent
                             self.send(CtrlPacket::PUBCOMP {
                                 packet_id: packet_id
                             });
+                        }
+                        CtrlPacket::PUBCOMP { packet_id } => {
+                            match self.published.get(&packet_id) {
+                                Some(published_token) => {
+                                    published_token.publish_state =
+                                        PublishState::Complete
+                                }, None => {}
+                            }
                         },
                         _ => {}
                     }
@@ -380,11 +403,11 @@ fn main() {
             .credentials("system", "manager")
             .keep_alive(120)
             .connect() {
-        Ok(ref mut mqtt_session) => {
-            mqtt_session.subscribe("testTopic1", 0 as u8);
-            mqtt_session.publish("testTopic2", "lalalalalala".to_string().into_bytes(), 0);
+        Ok(ref mut mqtt_connection) => {
+            mqtt_connection.subscribe("testTopic1", 0 as u8);
+            mqtt_connection.publish("testTopic2", "lalalalalala".to_string().into_bytes(), 0);
             loop {
-                match mqtt_session.await_new_message_with_timeout(&Duration::new(5, 0)) {
+                match mqtt_connection.await_new_message_with_timeout(&Duration::new(5, 0)) {
                     Some(message) => {
                         println!("topic = {:?}, payload = {:?}", message.topic,
                             String::from_utf8(message.payload).unwrap());
