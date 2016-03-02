@@ -29,7 +29,9 @@ struct MqttConnection {
     keep_alive: i16,
     last_message_sent: i64,
     received: Vec<ReceivedMessage>,
-    published: HashMap<i16, PublishToken>
+    published: HashMap<i16, PublishToken>,
+    subscribed: HashMap<i16, SubscribeToken>,
+    unsubscribed: HashMap<i16, UnsubscribeToken>
 }
 
 struct PublishToken {
@@ -62,6 +64,22 @@ enum RmqttError {
 struct ReceivedMessage {
     topic: String,
     payload: Vec<u8>
+}
+
+struct SubscribeToken {
+    return_code: Option<u8>
+}
+
+struct UnsubscribeToken {
+    unsubscribed: bool
+}
+
+struct SubscribeResult {
+    packet_id: i16
+}
+
+struct UnsubscribeResult {
+    packet_id: i16
 }
 
 impl MqttConnectionBuilder {
@@ -120,7 +138,9 @@ impl MqttConnectionBuilder {
             keep_alive: self.keep_alive,
             last_message_sent: time::get_time().sec,
             received: Vec::new(),
-            published: HashMap::new()
+            published: HashMap::new(),
+            subscribed: HashMap::new(),
+            unsubscribed: HashMap::new()
         };
 
         // send CONNECT packet to mqtt broker
@@ -174,16 +194,27 @@ impl MqttConnectionBuilder {
 impl MqttConnection {
 
     // send SUBSCRIBE packet to mqtt-broker
-    fn subscribe(&mut self, topic: &str, qos: u8) {
+    fn subscribe(&mut self, topic: &str, qos: u8) -> SubscribeResult {
         let next_packet_id = self.next_packet_id();
         self.send(CtrlPacket::new_subscribe(topic, qos, next_packet_id));
-        // TODO await SUBACK
+        self.subscribed.insert(next_packet_id, SubscribeToken {
+            return_code: None
+        });
+        SubscribeResult {
+            packet_id: next_packet_id
+        }
     }
 
     // send UNSUBSCRIBE packet to mqtt-broker
-    fn unsubscribe(&mut self, topic: &str) {
+    fn unsubscribe(&mut self, topic: &str) -> UnsubscribeResult {
         let next_packet_id = self.next_packet_id();
         self.send(CtrlPacket::new_unsubscribe(topic, next_packet_id));
+        self.unsubscribed.insert(next_packet_id, UnsubscribeToken {
+            unsubscribed: false
+        });
+        UnsubscribeResult {
+            packet_id: next_packet_id
+        }
     }
 
     // send PUBLISH packet to mqtt-broker
@@ -225,6 +256,72 @@ impl MqttConnection {
         self.last_message_sent = time::get_time().sec;
     }
 
+    fn await_subscribe_completed(&mut self, packet_id: i16) -> u8 {
+        loop {
+            match self.subscribed.get(&packet_id) {
+                Some(subscribe_token) => {
+                    match subscribe_token.return_code {
+                        Some(code) => {
+                            return code;
+                        } _ => {}
+                    }
+                }, None => {}
+            }
+            self.await_event(None);
+        }
+    }
+
+    fn await_subscribe_completed_with_timeout(&mut self, packet_id: i16, timeout: &Duration)
+            -> Option<u8> {
+        let finish_timestamp_sec = time::get_time().sec + timeout.as_secs() as i64;
+        loop {
+            match self.subscribed.get(&packet_id) {
+                Some(subscribe_token) => {
+                    match subscribe_token.return_code {
+                        Some(code) => {
+                            return Some(code);
+                        } _ => {}
+                    }
+                }, None => {}
+            }
+            self.await_event(Some(finish_timestamp_sec));
+
+            // TODO use std::time::Instant when stable
+            if time::get_time().sec >= finish_timestamp_sec {
+                return None;
+            }
+        }
+    }
+
+    fn await_unsubscribe_completed(&mut self, packet_id: i16) -> bool {
+        loop {
+            match self.unsubscribed.get(&packet_id) {
+                Some(unsubscribe_token) => {
+                    return unsubscribe_token.unsubscribed;
+                }, None => {}
+            }
+            self.await_event(None);
+        }
+    }
+
+    fn await_unsubscribe_completed_with_timeout(&mut self, packet_id: i16, timeout: &Duration)
+            -> Option<bool> {
+        let finish_timestamp_sec = time::get_time().sec + timeout.as_secs() as i64;
+        loop {
+            match self.unsubscribed.get(&packet_id) {
+                Some(unsubscribe_token) => {
+                    return Some(unsubscribe_token.unsubscribed);
+                }, None => {}
+            }
+            self.await_event(Some(finish_timestamp_sec));
+
+            // TODO use std::time::Instant when stable
+            if time::get_time().sec >= finish_timestamp_sec {
+                return None;
+            }
+        }
+    }
+
     fn await_new_message(&mut self) -> ReceivedMessage {
         loop {
             match self.received.pop() {
@@ -258,7 +355,6 @@ impl MqttConnection {
         }
     }
 
-    // TODO add timeout
     fn await_publish_completion(&mut self, packet_id: i16) -> PublishResult {
         loop {
             match self.published.get(&packet_id) {
@@ -281,6 +377,40 @@ impl MqttConnection {
                 }
             }
             self.await_event(None);
+        }
+    }
+
+    fn await_publish_completion_with_timeout(&mut self, packet_id: i16, timeout: &Duration)
+            -> PublishResult {
+        let finish_timestamp_sec = time::get_time().sec + timeout.as_secs() as i64;
+        loop {
+            match self.published.get(&packet_id) {
+                Some(published_token) => {
+                    match published_token.publish_state {
+                        PublishState::Acknowledgement => {
+                            // TODO qos is hopefully 1 in this case
+                            return PublishResult::Ready;
+                        },
+                        PublishState::Complete => {
+                            // TODO qos is hopefully 2 in this case
+                            return PublishResult::Ready;
+                        },
+                        _ => {}
+                    }
+                }, None => {
+                    // no message with given id sent
+                    // TODO what should I do in this case?
+                    return PublishResult::Ready;
+                }
+            }
+            self.await_event(Some(finish_timestamp_sec));
+
+            // TODO use std::time::Instant when stable
+            if time::get_time().sec >= finish_timestamp_sec {
+                return PublishResult::NotComplete {
+                    packet_id: packet_id
+                };
+            }
         }
     }
 
@@ -307,18 +437,16 @@ impl MqttConnection {
                         // TODO what to do if I receive PUBACK/COMP/.. with id that I dont know?
                         // TODO is it possible?
                         CtrlPacket::PUBACK { packet_id } => {
-                            match self.published.get(&packet_id) {
-                                Some(published_token) => {
-                                    published_token.publish_state =
-                                        PublishState::Acknowledgement
+                            match self.published.get_mut(&packet_id) {
+                                Some(mut published_token) => {
+                                    published_token.publish_state = PublishState::Acknowledgement;
                                 }, None => {}
                             }
                         },
                         CtrlPacket::PUBREC { packet_id } => {
-                            match self.published.get(&packet_id) {
-                                Some(published_token) => {
-                                    published_token.publish_state =
-                                        PublishState::Received
+                            match self.published.get_mut(&packet_id) {
+                                Some(mut published_token) => {
+                                    published_token.publish_state = PublishState::Received;
                                 }, None => {}
                             }
                             self.send(CtrlPacket::PUBREL {
@@ -331,13 +459,27 @@ impl MqttConnection {
                             });
                         }
                         CtrlPacket::PUBCOMP { packet_id } => {
-                            match self.published.get(&packet_id) {
-                                Some(published_token) => {
+                            match self.published.get_mut(&packet_id) {
+                                Some(mut published_token) => {
                                     published_token.publish_state =
                                         PublishState::Complete
                                 }, None => {}
                             }
                         },
+                        CtrlPacket::SUBACK { packet_id, return_code } => {
+                            match self.subscribed.get_mut(&packet_id) {
+                                Some(mut subscribe_token) => {
+                                    subscribe_token.return_code = Some(return_code);
+                                }, None => {}
+                            }
+                        },
+                        CtrlPacket::UNSUBACK { packet_id } => {
+                            match self.unsubscribed.get_mut(&packet_id) {
+                                Some(mut unsubscribe_token) => {
+                                    unsubscribe_token.unsubscribed = true;
+                                }, None => {}
+                            }
+                        }
                         _ => {}
                     }
                 },
