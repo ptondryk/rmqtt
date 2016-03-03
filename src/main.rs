@@ -2,6 +2,7 @@ extern crate time;
 
 use std::net::TcpStream;
 use std::io::prelude::*;
+use std::io::{Error, ErrorKind};
 use std::thread;
 use std::str;
 use std::time::Duration;
@@ -82,6 +83,10 @@ struct UnsubscribeResult {
     packet_id: i16
 }
 
+struct Received {
+    packet_id: i16
+}
+
 impl MqttConnectionBuilder {
 
     fn new(client_id: &str, host: &str) -> MqttConnectionBuilder {
@@ -125,67 +130,79 @@ impl MqttConnectionBuilder {
         self
     }
 
-    fn connect(self) -> Result<MqttConnection, &'static str> {
+    fn connect(self) -> Result<MqttConnection, String> {
 
         // connect to the mqtt broker
-        let stream = TcpStream::connect(&*self.host).unwrap();
-        stream.set_read_timeout(Some(Duration::new(0, 10000)));
+        match TcpStream::connect(&*self.host) {
+            Ok(stream) => {
+                stream.set_read_timeout(Some(Duration::new(0, 100000000)));
 
-        // create new MqttConnection object
-        let mut new_mqtt_connection = MqttConnection {
-            packet_id: 0,
-            stream: stream,
-            keep_alive: self.keep_alive,
-            last_message_sent: time::get_time().sec,
-            received: Vec::new(),
-            published: HashMap::new(),
-            subscribed: HashMap::new(),
-            unsubscribed: HashMap::new()
-        };
+                // create new MqttConnection object
+                let mut new_mqtt_connection = MqttConnection {
+                    packet_id: 0,
+                    stream: stream,
+                    keep_alive: self.keep_alive,
+                    last_message_sent: time::get_time().sec,
+                    received: Vec::new(),
+                    published: HashMap::new(),
+                    subscribed: HashMap::new(),
+                    unsubscribed: HashMap::new()
+                };
 
-        // send CONNECT packet to mqtt broker
-        new_mqtt_connection.send(CtrlPacket::CONNECT {
-            clientId: self.client_id,
-            topic: self.will_topic,
-            content: self.will_content,
-            qos: self.will_qos,
-            retain: self.will_retain,
-            username: self.user,
-            password: self.password,
-            clean_session: self.clean_session,
-            keep_alive: self.keep_alive
-        });
+                // send CONNECT packet to mqtt broker
+                new_mqtt_connection.send(CtrlPacket::CONNECT {
+                    clientId: self.client_id,
+                    topic: self.will_topic,
+                    content: self.will_content,
+                    qos: self.will_qos,
+                    retain: self.will_retain,
+                    username: self.user,
+                    password: self.password,
+                    clean_session: self.clean_session,
+                    keep_alive: self.keep_alive
+                });
 
-        // try receive CONNACK
-        match new_mqtt_connection.receive(None).unwrap() {
-            CtrlPacket::CONNACK {session_present, return_code} => {
-                match return_code {
-                    0x00 => {
-                        Ok(new_mqtt_connection)
+                // try receive CONNACK
+                match new_mqtt_connection.receive(None) {
+                    Ok(packet) => {
+                        match packet {
+                            CtrlPacket::CONNACK {session_present, return_code} => {
+                                match return_code {
+                                    0x00 => {
+                                        Ok(new_mqtt_connection)
+                                    },
+                                    0x01 => {
+                                        Err(String::from("Connection Refused, unacceptable protocol version"))
+                                    },
+                                    0x02 => {
+                                        Err(String::from("Connection Refused, identifier rejected"))
+                                    },
+                                    0x03 => {
+                                        Err(String::from("Connection Refused, Server unavailable"))
+                                    },
+                                    0x04 => {
+                                        Err(String::from("Connection Refused, bad user name or password"))
+                                    },
+                                    0x05 => {
+                                        Err(String::from("Connection Refused, not authorized"))
+                                    },
+                                    _ => {
+                                        Err(String::from("Connection Refused, invalid return code"))
+                                    }
+                                }
+                            },
+                            _ => {
+                                // TODO is it possible? is it error?
+                                Err(String::from("Unexpected packet received"))
+                            }
+                        }
                     },
-                    0x01 => {
-                        Err("Connection Refused, unacceptable protocol version")
-                    },
-                    0x02 => {
-                        Err("Connection Refused, identifier rejected")
-                    },
-                    0x03 => {
-                        Err("Connection Refused, Server unavailable")
-                    },
-                    0x04 => {
-                        Err("Connection Refused, bad user name or password")
-                    },
-                    0x05 => {
-                        Err("Connection Refused, not authorized")
-                    },
-                    _ => {
-                        Err("Connection Refused, invalid return code")
+                    Err(error) => {
+                        Err(error.to_string())
                     }
                 }
-            },
-            _ => {
-                // TODO is it possible? is it error?
-                Err("Unexpected packet received")
+            }, Err(error) => {
+                Err(error.to_string())
             }
         }
     }
@@ -256,132 +273,184 @@ impl MqttConnection {
         self.last_message_sent = time::get_time().sec;
     }
 
-    fn await_subscribe_completed(&mut self, packet_id: i16) -> u8 {
+    fn await_subscribe_completed(&mut self, packet_id: i16) -> Result<u8, String> {
         loop {
             match self.subscribed.get(&packet_id) {
                 Some(subscribe_token) => {
                     match subscribe_token.return_code {
                         Some(code) => {
-                            return code;
+                            return Ok(code);
                         } _ => {}
                     }
                 }, None => {}
             }
-            self.await_event(None);
+            loop {
+                match self.await_event(None) {
+                    Ok(received_event) => {
+                        if received_event.packet_id == packet_id {
+                            break;
+                        }
+                    }, Err(error) => {
+                        return Err(error.to_string());
+                    }
+                }
+            }
         }
     }
 
     fn await_subscribe_completed_with_timeout(&mut self, packet_id: i16, timeout: &Duration)
-            -> Option<u8> {
+            -> Result<u8, String> {
         let finish_timestamp_sec = time::get_time().sec + timeout.as_secs() as i64;
         loop {
             match self.subscribed.get(&packet_id) {
                 Some(subscribe_token) => {
                     match subscribe_token.return_code {
                         Some(code) => {
-                            return Some(code);
+                            return Ok(code);
                         } _ => {}
                     }
                 }, None => {}
             }
-            self.await_event(Some(finish_timestamp_sec));
-
-            // TODO use std::time::Instant when stable
-            if time::get_time().sec >= finish_timestamp_sec {
-                return None;
+            loop {
+                match self.await_event(Some(finish_timestamp_sec)) {
+                    Ok(received_event) => {
+                        if received_event.packet_id == packet_id {
+                            break;
+                        }
+                    }, Err(error) => {
+                        return Err(error.to_string());
+                    }
+                }
             }
         }
     }
 
-    fn await_unsubscribe_completed(&mut self, packet_id: i16) -> bool {
+    fn await_unsubscribe_completed(&mut self, packet_id: i16) -> Result<bool, String> {
         loop {
             match self.unsubscribed.get(&packet_id) {
                 Some(unsubscribe_token) => {
-                    return unsubscribe_token.unsubscribed;
+                    return Ok(unsubscribe_token.unsubscribed);
                 }, None => {}
             }
-            self.await_event(None);
+            loop {
+                match self.await_event(None) {
+                    Ok(received_event) => {
+                        if received_event.packet_id == packet_id {
+                            break;
+                        }
+                    }, Err(error) => {
+                        return Err(error.to_string());
+                    }
+                }
+            }
         }
     }
 
     fn await_unsubscribe_completed_with_timeout(&mut self, packet_id: i16, timeout: &Duration)
-            -> Option<bool> {
+            -> Result<bool, String> {
         let finish_timestamp_sec = time::get_time().sec + timeout.as_secs() as i64;
         loop {
             match self.unsubscribed.get(&packet_id) {
                 Some(unsubscribe_token) => {
-                    return Some(unsubscribe_token.unsubscribed);
+                    return Ok(unsubscribe_token.unsubscribed);
                 }, None => {}
             }
-            self.await_event(Some(finish_timestamp_sec));
-
-            // TODO use std::time::Instant when stable
-            if time::get_time().sec >= finish_timestamp_sec {
-                return None;
+            loop {
+                match self.await_event(Some(finish_timestamp_sec)) {
+                    Ok(received_event) => {
+                        if received_event.packet_id == packet_id {
+                            break;
+                        }
+                    }, Err(error) => {
+                        return Err(error.to_string());
+                    }
+                }
             }
         }
     }
 
-    fn await_new_message(&mut self) -> ReceivedMessage {
+    fn await_new_message(&mut self) -> Result<ReceivedMessage, String> {
         loop {
             match self.received.pop() {
                 Some(received_message) => {
                     // TODO adjust packet id to the packet id from received message
                     // TODO return message only if it has been already acknowlegded/completed (qos 1/2)
-                    return received_message;
+                    return Ok(received_message);
                 }, None => {}
             }
-            self.await_event(None);
+            loop {
+                match self.await_event(None) {
+                    Ok(received_event) => {
+                        break;
+                    }, Err(error) => {
+                        return Err(error.to_string());
+                    }
+                }
+            }
         }
     }
 
     // timeout considers only second-part of the Duration
     // TODO should I check the nanosecond part too?
-    fn await_new_message_with_timeout(&mut self, timeout: &Duration) -> Option<ReceivedMessage> {
+    fn await_new_message_with_timeout(&mut self, timeout: &Duration)
+            -> Result<ReceivedMessage, String> {
         let finish_timestamp_sec = time::get_time().sec + timeout.as_secs() as i64;
         loop {
             match self.received.pop() {
                 Some(received_message) => {
                     // TODO return message only if it has been already acknowlegded/completed (qos 1/2)
-                    return Some(received_message);
+                    return Ok(received_message);
                 }, None => {}
             }
-            self.await_event(Some(finish_timestamp_sec));
-
-            // TODO use std::time::Instant when stable
-            if time::get_time().sec >= finish_timestamp_sec {
-                return None;
+            loop {
+                match self.await_event(Some(finish_timestamp_sec)) {
+                    Ok(received_event) => {
+                        break;
+                    }, Err(error) => {
+                        return Err(error.to_string());
+                    }
+                }
             }
         }
     }
 
-    fn await_publish_completion(&mut self, packet_id: i16) -> PublishResult {
+    fn await_publish_completion(&mut self, packet_id: i16) -> Result<PublishResult, String> {
         loop {
             match self.published.get(&packet_id) {
                 Some(published_token) => {
                     match published_token.publish_state {
                         PublishState::Acknowledgement => {
                             // TODO qos is hopefully 1 in this case
-                            return PublishResult::Ready;
+                            return Ok(PublishResult::Ready);
                         },
                         PublishState::Complete => {
                             // TODO qos is hopefully 2 in this case
-                            return PublishResult::Ready;
+                            return Ok(PublishResult::Ready);
                         },
                         _ => {}
                     }
                 }, None => {
                     // no message with given id sent
                     // TODO what should I do in this case?
-                    return PublishResult::Ready;
+                    return Ok(PublishResult::Ready);
                 }
             }
-            self.await_event(None);
+            loop {
+                match self.await_event(None) {
+                    Ok(received_event) => {
+                        if received_event.packet_id == packet_id {
+                            break;
+                        }
+                    }, Err(error) => {
+                        return Err(error.to_string());
+                    }
+                }
+            }
         }
     }
 
     fn await_publish_completion_with_timeout(&mut self, packet_id: i16, timeout: &Duration)
-            -> PublishResult {
+            -> Result<PublishResult, String> {
         let finish_timestamp_sec = time::get_time().sec + timeout.as_secs() as i64;
         loop {
             match self.published.get(&packet_id) {
@@ -389,36 +458,39 @@ impl MqttConnection {
                     match published_token.publish_state {
                         PublishState::Acknowledgement => {
                             // TODO qos is hopefully 1 in this case
-                            return PublishResult::Ready;
+                            return Ok(PublishResult::Ready);
                         },
                         PublishState::Complete => {
                             // TODO qos is hopefully 2 in this case
-                            return PublishResult::Ready;
+                            return Ok(PublishResult::Ready);
                         },
                         _ => {}
                     }
                 }, None => {
                     // no message with given id sent
                     // TODO what should I do in this case?
-                    return PublishResult::Ready;
+                    return Ok(PublishResult::Ready);
                 }
             }
-            self.await_event(Some(finish_timestamp_sec));
-
-            // TODO use std::time::Instant when stable
-            if time::get_time().sec >= finish_timestamp_sec {
-                return PublishResult::NotComplete {
-                    packet_id: packet_id
-                };
+            loop {
+                match self.await_event(Some(finish_timestamp_sec)) {
+                    Ok(received_event) => {
+                        if received_event.packet_id == packet_id {
+                            break;
+                        }
+                    }, Err(error) => {
+                        return Err(error.to_string());
+                    }
+                }
             }
         }
     }
 
     // timeout - time to which this method should end
-    fn await_event(&mut self, timeout: Option<i64>) {
+    fn await_event(&mut self, timeout: Option<i64>) -> Result<Received, String> {
         loop {
             match self.receive(timeout) {
-                Some(packet) => {
+                Ok(packet) => {
                     match packet {
                         CtrlPacket::PUBLISH { packet_id, topic, payload,
                                     duplicate_delivery, qos, retain } => {
@@ -432,7 +504,9 @@ impl MqttConnection {
                                 });
                             }
                             self.received.push(ReceivedMessage::new(topic, payload));
-                            break;
+                            return Ok(Received {
+                                packet_id: packet_id.unwrap()
+                            });
                         },
                         // TODO what to do if I receive PUBACK/COMP/.. with id that I dont know?
                         // TODO is it possible?
@@ -442,6 +516,9 @@ impl MqttConnection {
                                     published_token.publish_state = PublishState::Acknowledgement;
                                 }, None => {}
                             }
+                            return Ok(Received {
+                                packet_id: packet_id
+                            });
                         },
                         CtrlPacket::PUBREC { packet_id } => {
                             match self.published.get_mut(&packet_id) {
@@ -465,6 +542,9 @@ impl MqttConnection {
                                         PublishState::Complete
                                 }, None => {}
                             }
+                            return Ok(Received {
+                                packet_id: packet_id
+                            });
                         },
                         CtrlPacket::SUBACK { packet_id, return_code } => {
                             match self.subscribed.get_mut(&packet_id) {
@@ -472,6 +552,9 @@ impl MqttConnection {
                                     subscribe_token.return_code = Some(return_code);
                                 }, None => {}
                             }
+                            return Ok(Received {
+                                packet_id: packet_id
+                            });
                         },
                         CtrlPacket::UNSUBACK { packet_id } => {
                             match self.unsubscribed.get_mut(&packet_id) {
@@ -483,7 +566,9 @@ impl MqttConnection {
                         _ => {}
                     }
                 },
-                None => {}
+                Err(error) => {
+                    return Err(error.to_string());
+                }
             }
 
             // keep alive check
@@ -491,40 +576,47 @@ impl MqttConnection {
             if current_timestamp_second > self.last_message_sent + self.keep_alive as i64 {
                 self.send(CtrlPacket::PINGREQ);
             }
-            // TODO optimize the timeout check
-            match timeout {
-                Some(finish_timestamp_sec) => {
-                    if time::get_time().sec >= finish_timestamp_sec {
-                        break;
-                    }
-                }, None => {}
-            }
 
             thread::sleep(Duration::from_millis(500));
         }
     }
 
     // TODO reconnect if error occured because of connection lost
-    fn receive(&mut self, timeout: Option<i64>) -> Option<CtrlPacket> {
+    fn receive(&mut self, timeout: Option<i64>) -> Result<CtrlPacket, String> {
         let mut buffer: Vec<u8> = Vec::new();
-        let mut packet: Option<CtrlPacket> = None;
-        while packet.is_none() {
-            // TODO read single bytes to avoid
-            // that I read bytes of second packet and "forget" them
-            self.stream.read_to_end(&mut buffer);
-            packet = mqtt::parse(&mut buffer);
-
+        let mut single_byte = [0u8; 1];
+        loop {
+            match self.stream.read(&mut single_byte) {
+                Ok(loaded_bytes_size) => {
+                    if loaded_bytes_size > 0 {
+                        // TODO fix packet receiving
+                        buffer.push(single_byte[0]);
+                        match mqtt::parse(&mut buffer) {
+                            Some(packet) => {
+                                return Ok(packet);
+                            }, None => {}
+                        }
+                    }
+                },
+                Err(error) => {
+                    match error.kind() {
+                        ErrorKind::WouldBlock | ErrorKind::TimedOut => {},
+                        _ => {
+                            return Err(error.to_string());
+                        }
+                    }
+                }
+            }
             // TODO optimize the timeout check
             match timeout {
                 Some(finish_timestamp_sec) => {
                     if time::get_time().sec >= finish_timestamp_sec {
-                        break;
+                        return Err(String::from("Timeout"));
                     }
                 }, None => {}
             }
             thread::sleep(Duration::from_millis(500));
         }
-        packet
     }
 
 }
@@ -550,15 +642,17 @@ fn main() {
             mqtt_connection.publish("testTopic2", "lalalalalala".to_string().into_bytes(), 0);
             loop {
                 match mqtt_connection.await_new_message_with_timeout(&Duration::new(5, 0)) {
-                    Some(message) => {
+                    Ok(message) => {
                         println!("topic = {:?}, payload = {:?}", message.topic,
                             String::from_utf8(message.payload).unwrap());
-                    }, None => {
-                        println!("Nothing received within last 5 seconds", );
+                    }, Err(error_message) => {
+                        println!("{:?}", error_message);
                     }
                 }
             }
         },
-        Err(_) => {}
+        Err(message) => {
+            println!("Connection failed, cause: {:?}", message);
+        }
     }
 }
