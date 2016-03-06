@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use mqtt::*;
 mod mqtt;
 
-struct MqttConnectionBuilder {
+struct MqttSessionBuilder {
     client_id: String,
     host: String,
     user: Option<String>,
@@ -24,15 +24,20 @@ struct MqttConnectionBuilder {
     keep_alive: i16
 }
 
-struct MqttConnection {
+struct MqttSession {
+    host: String,
     packet_id: i16,
-    stream: TcpStream,
+    connection: MqttConnection,
     keep_alive: i16,
-    last_message_sent: i64,
     received: Vec<ReceivedMessage>,
     published: HashMap<i16, PublishToken>,
     subscribed: HashMap<i16, SubscribeToken>,
     unsubscribed: HashMap<i16, UnsubscribeToken>
+}
+
+struct MqttConnection {
+    stream: TcpStream,
+    last_message_sent: i64
 }
 
 struct PublishToken {
@@ -87,10 +92,10 @@ struct Received {
     packet_id: i16
 }
 
-impl MqttConnectionBuilder {
+impl MqttSessionBuilder {
 
-    fn new(client_id: &str, host: &str) -> MqttConnectionBuilder {
-        MqttConnectionBuilder {
+    fn new(client_id: &str, host: &str) -> MqttSessionBuilder {
+        MqttSessionBuilder {
             client_id: client_id.to_string(),
             host: host.to_string(),
             user: None,
@@ -104,14 +109,14 @@ impl MqttConnectionBuilder {
         }
     }
 
-    fn credentials(mut self, user: &str, password: &str) -> MqttConnectionBuilder {
+    fn credentials(mut self, user: &str, password: &str) -> MqttSessionBuilder {
         self.user = Some(user.to_string());
         self.password = Some(password.to_string());
         self
     }
 
     fn will_message(mut self, will_topic: &str, will_content: &str,
-            will_qos: u8, will_retain: bool) -> MqttConnectionBuilder {
+            will_qos: u8, will_retain: bool) -> MqttSessionBuilder {
         self.will_retain = Some(will_retain);
         self.will_qos = Some(will_qos);
         self.will_topic = Some(will_topic.to_string());
@@ -120,29 +125,34 @@ impl MqttConnectionBuilder {
     }
 
     // keep_alive in seconds
-    fn keep_alive(mut self, keep_alive: i16) -> MqttConnectionBuilder {
+    fn keep_alive(mut self, keep_alive: i16) -> MqttSessionBuilder {
         self.keep_alive = keep_alive;
         self
     }
 
-    fn clean_session(mut self) -> MqttConnectionBuilder {
+    fn clean_session(mut self) -> MqttSessionBuilder {
         self.clean_session = true;
         self
     }
 
-    fn connect(self) -> Result<MqttConnection, String> {
+    fn connect(self) -> Result<MqttSession, String> {
 
         // connect to the mqtt broker
         match TcpStream::connect(&*self.host) {
             Ok(stream) => {
                 stream.set_read_timeout(Some(Duration::new(0, 100000000)));
 
-                // create new MqttConnection object
                 let mut new_mqtt_connection = MqttConnection {
-                    packet_id: 0,
                     stream: stream,
+                    last_message_sent: time::get_time().sec
+                };
+
+                // create new MqttSession object
+                let mut new_mqtt_session = MqttSession {
+                    host: self.host,
+                    packet_id: 0,
+                    connection: new_mqtt_connection,
                     keep_alive: self.keep_alive,
-                    last_message_sent: time::get_time().sec,
                     received: Vec::new(),
                     published: HashMap::new(),
                     subscribed: HashMap::new(),
@@ -150,7 +160,7 @@ impl MqttConnectionBuilder {
                 };
 
                 // send CONNECT packet to mqtt broker
-                new_mqtt_connection.send(CtrlPacket::CONNECT {
+                new_mqtt_session.connection.send(CtrlPacket::CONNECT {
                     clientId: self.client_id,
                     topic: self.will_topic,
                     content: self.will_content,
@@ -163,13 +173,13 @@ impl MqttConnectionBuilder {
                 });
 
                 // try receive CONNACK
-                match new_mqtt_connection.receive(None) {
+                match new_mqtt_session.connection.receive(None) {
                     Ok(packet) => {
                         match packet {
                             CtrlPacket::CONNACK {session_present, return_code} => {
                                 match return_code {
                                     0x00 => {
-                                        Ok(new_mqtt_connection)
+                                        Ok(new_mqtt_session)
                                     },
                                     0x01 => {
                                         Err(String::from("Connection Refused, unacceptable protocol version"))
@@ -208,12 +218,33 @@ impl MqttConnectionBuilder {
     }
 }
 
-impl MqttConnection {
+impl MqttSession {
+
+    fn reconnect(&mut self) -> bool {
+        match TcpStream::connect(&*self.host) {
+            Ok(stream) => {
+                stream.set_read_timeout(Some(Duration::new(0, 100000000)));
+                // TODO does it depend on clean_session flag?
+                self.redeliver_packets();
+                true
+            },
+            Err(error) => {
+                false
+            }
+        }
+    }
+
+    fn redeliver_packets(&mut self) {
+        for (packet_id, published_token) in self.published.iter() {
+            self.connection.send(CtrlPacket::new_publish(&published_token.topic,
+                published_token.payload.clone(), packet_id.clone(), published_token.qos));
+        }
+    }
 
     // send SUBSCRIBE packet to mqtt-broker
     fn subscribe(&mut self, topic: &str, qos: u8) -> SubscribeResult {
         let next_packet_id = self.next_packet_id();
-        self.send(CtrlPacket::new_subscribe(topic, qos, next_packet_id));
+        self.connection.send(CtrlPacket::new_subscribe(topic, qos, next_packet_id));
         self.subscribed.insert(next_packet_id, SubscribeToken {
             return_code: None
         });
@@ -225,7 +256,7 @@ impl MqttConnection {
     // send UNSUBSCRIBE packet to mqtt-broker
     fn unsubscribe(&mut self, topic: &str) -> UnsubscribeResult {
         let next_packet_id = self.next_packet_id();
-        self.send(CtrlPacket::new_unsubscribe(topic, next_packet_id));
+        self.connection.send(CtrlPacket::new_unsubscribe(topic, next_packet_id));
         self.unsubscribed.insert(next_packet_id, UnsubscribeToken {
             unsubscribed: false
         });
@@ -246,10 +277,10 @@ impl MqttConnection {
                     qos: qos,
                     last_message: 0
                 });
-                self.send(CtrlPacket::new_publish(topic, payload, next_packet_id, qos));
+                self.connection.send(CtrlPacket::new_publish(topic, payload, next_packet_id, qos));
                 PublishResult::NotComplete { packet_id: next_packet_id }
             }, _ => {
-                self.send(CtrlPacket::new_publish_qos0(topic, payload));
+                self.connection.send(CtrlPacket::new_publish_qos0(topic, payload));
                 PublishResult::Ready
             }
         }
@@ -257,20 +288,12 @@ impl MqttConnection {
 
     // send DISCONNECT packet to mqtt-broker
     fn disconnect(&mut self) {
-        self.send(CtrlPacket::DISCONNECT);
+        self.connection.send(CtrlPacket::DISCONNECT);
     }
 
     fn next_packet_id(&mut self) -> i16 {
         self.packet_id = self.packet_id + 1;
         self.packet_id
-    }
-
-    fn send(&mut self, ctrl_packet: CtrlPacket) {
-        let bytes: &[u8] = &ctrl_packet.as_bytes().into_boxed_slice();
-        let _ = self.stream.write(bytes);
-
-        // set the last-message timestamp to now
-        self.last_message_sent = time::get_time().sec;
     }
 
     fn await_subscribe_completed(&mut self, packet_id: i16) -> Result<u8, String> {
@@ -489,17 +512,17 @@ impl MqttConnection {
     // timeout - time to which this method should end
     fn await_event(&mut self, timeout: Option<i64>) -> Result<Received, String> {
         loop {
-            match self.receive(timeout) {
+            match self.connection.receive(timeout) {
                 Ok(packet) => {
                     match packet {
                         CtrlPacket::PUBLISH { packet_id, topic, payload,
                                     duplicate_delivery, qos, retain } => {
                             if qos == 1 {
-                                self.send(CtrlPacket::PUBACK {
+                                self.connection.send(CtrlPacket::PUBACK {
                                     packet_id: packet_id.unwrap()
                                 });
                             } else if qos == 2 {
-                                self.send(CtrlPacket::PUBREC {
+                                self.connection.send(CtrlPacket::PUBREC {
                                     packet_id: packet_id.unwrap()
                                 });
                             }
@@ -526,12 +549,12 @@ impl MqttConnection {
                                     published_token.publish_state = PublishState::Received;
                                 }, None => {}
                             }
-                            self.send(CtrlPacket::PUBREL {
+                            self.connection.send(CtrlPacket::PUBREL {
                                 packet_id: packet_id
                             });
                         },
                         CtrlPacket::PUBREL { packet_id } => {
-                            self.send(CtrlPacket::PUBCOMP {
+                            self.connection.send(CtrlPacket::PUBCOMP {
                                 packet_id: packet_id
                             });
                         }
@@ -573,12 +596,24 @@ impl MqttConnection {
 
             // keep alive check
             let current_timestamp_second = time::get_time().sec;
-            if current_timestamp_second > self.last_message_sent + self.keep_alive as i64 {
-                self.send(CtrlPacket::PINGREQ);
+            if current_timestamp_second > self.connection.last_message_sent + self.keep_alive as i64 {
+                self.connection.send(CtrlPacket::PINGREQ);
             }
 
             thread::sleep(Duration::from_millis(500));
         }
+    }
+
+}
+
+impl MqttConnection {
+
+    fn send(&mut self, ctrl_packet: CtrlPacket) {
+        let bytes: &[u8] = &ctrl_packet.as_bytes().into_boxed_slice();
+        let _ = self.stream.write(bytes);
+
+        // set the last-message timestamp to now
+        self.last_message_sent = time::get_time().sec;
     }
 
     // TODO reconnect if error occured because of connection lost
@@ -633,7 +668,7 @@ impl ReceivedMessage {
 }
 
 fn main() {
-    match MqttConnectionBuilder::new("test-client-01", "localhost:1883")
+    match MqttSessionBuilder::new("test-client-01", "localhost:1883")
             .credentials("system", "manager")
             .keep_alive(120)
             .connect() {
