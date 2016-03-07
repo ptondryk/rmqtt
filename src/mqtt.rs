@@ -1,9 +1,7 @@
-use std::fmt;
-
 #[derive(Debug)]
 pub enum CtrlPacket {
     CONNECT {
-        clientId: String,
+        client_id: String,
         topic: Option<String>,
         content: Option<String>,
         qos: Option<u8>,
@@ -102,7 +100,7 @@ impl CtrlPacket {
         let mut result: Vec<u8> = Vec::new();
 
         match self {
-            CtrlPacket::CONNECT { clientId, topic, content, qos, retain, username,
+            CtrlPacket::CONNECT { client_id, topic, content, qos, retain, username,
                         password, clean_session, keep_alive } => {
                 // id = 1 and reserved flags = 0
                 result.push(0x10);
@@ -145,7 +143,7 @@ impl CtrlPacket {
                 result.push(keep_alive as u8);
 
                 // Client Identifier
-                result.append(&mut encode_string(&clientId));
+                result.append(&mut encode_string(&client_id));
 
                 // Will Topic
                 match topic {
@@ -464,20 +462,20 @@ fn encode_remaining_length(input_length: usize) -> Vec<u8> {
 fn decode_remaining_length(remaining_length: &Vec<u8>, offset: i8) -> Option<i32> {
     let mut multiplier: i32 = 1;
     let mut value: i32 = 0;
-    let mut encodedByte: u8 = 0;
+    let mut encoded_byte: u8 = 0;
     let mut counter: i8 = offset;
 
     if remaining_length.len() as i8 - offset > 0 {
         loop {
-            encodedByte = remaining_length[counter as usize];
-            value += (encodedByte & 127) as i32 * multiplier;
+            encoded_byte = remaining_length[counter as usize];
+            value += (encoded_byte & 127) as i32 * multiplier;
 
             multiplier *= 128;
             if multiplier > 128 * 128 * 128 {
                 // Malformed Remaining Length (not complete?)
                 return None
             }
-            if (encodedByte & 128) == 0 {
+            if (encoded_byte & 128) == 0 {
                 break;
             }
             counter += 1;
