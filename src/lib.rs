@@ -10,6 +10,25 @@ use std::collections::HashMap;
 use mqtt::*;
 mod mqtt;
 
+/// A structure that can be used to connect to mqtt-broker and build a session.
+///
+/// # Examples
+///
+/// ```
+/// use rmqtt::MqttSessionBuilder;
+///
+/// match MqttSessionBuilder::new("test-client", "localhost:1883")
+///         .credentials("user", "password")
+///         .keep_alive(120)
+///         .connect() {
+///     Ok(ref mut mqtt_session) => {
+///         // do somthing with session
+///     },
+///     Err(message) => {
+///         // session creation failed (cause can be found in message)
+///     }
+/// }
+/// ```
 pub struct MqttSessionBuilder {
     client_id: String,
     host: String,
@@ -23,6 +42,7 @@ pub struct MqttSessionBuilder {
     keep_alive: i16
 }
 
+/// This structure represents a mqtt session.
 pub struct MqttSession {
     host: String,
     packet_id: i16,
@@ -96,13 +116,7 @@ enum ReceivedPacket {
 
 impl MqttSessionBuilder {
 
-    /// Creates a new MqttSessionBuilder.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// MqttSessionBuilder::new("test-client", "localhost:1883")
-    /// ```
+    /// Creates a new `MqttSessionBuilder`.
     pub fn new(client_id: &str, host: &str) -> MqttSessionBuilder {
         MqttSessionBuilder {
             client_id: client_id.to_string(),
@@ -118,12 +132,24 @@ impl MqttSessionBuilder {
         }
     }
 
+    /// This method can be used to specify the username and password
+    /// that should be used to authenticated the client when connecting to
+    /// the mqtt broker.
+    ///
+    /// If this method is not called then the `MqttSessionBuilder` tries to create
+    /// a connection without authntication.
     pub fn credentials(mut self, user: &str, password: &str) -> MqttSessionBuilder {
         self.user = Some(user.to_string());
         self.password = Some(password.to_string());
         self
     }
 
+    /// This method can be used to define the Will Message. Will Message is
+    /// (acording to the mqtt 3.1.1 documentation) a message that will be published to the
+    /// in this method specified topic when the unexpected connection lost between
+    /// client and broker occures.
+    ///
+    /// If this method is not called then no Will Message is defined.
     pub fn will_message(mut self, will_topic: &str, will_content: &str,
             will_qos: u8, will_retain: bool) -> MqttSessionBuilder {
         self.will_retain = Some(will_retain);
@@ -133,17 +159,21 @@ impl MqttSessionBuilder {
         self
     }
 
-    // keep_alive in seconds
+    /// This method can be used to define how often should the broker expect a
+    /// keep alive message from client. The time period is defined in seconds.
     pub fn keep_alive(mut self, keep_alive: i16) -> MqttSessionBuilder {
         self.keep_alive = keep_alive;
         self
     }
 
+    /// Call of this method indicates that a clean session should be initialized.
     pub fn clean_session(mut self) -> MqttSessionBuilder {
         self.clean_session = true;
         self
     }
 
+    /// This method can be used to initialize the connetion between broker and client using
+    /// parameters defined in this `MqttSessionBuilder`.
     pub fn connect(self) -> Result<MqttSession, String> {
 
         // connect to the mqtt broker
@@ -293,7 +323,11 @@ impl MqttSession {
         self.connection.send(CtrlPacket::DISCONNECT);
     }
 
-    pub fn await_subscribe_completed(&mut self, subscribe_packet_id: i16) -> Result<u8, String> {
+    /// Method waits (blocks the execution) until the topic is subscribed.
+    pub fn await_subscribe_completed(&mut self, subscribe_packet_id: i16,
+            timeout: Option<Duration>) -> Result<u8, String> {
+        let finish_timestamp_sec: Option<i64> =
+            timeout.map(|timeout| time::get_time().sec + timeout.as_secs() as i64);
         loop {
             match self.subscribed.get(&subscribe_packet_id) {
                 Some(subscribe_token) => {
@@ -305,7 +339,7 @@ impl MqttSession {
                 }, None => {}
             }
             loop {
-                match self.await_event(None) {
+                match self.await_event(finish_timestamp_sec) {
                     Ok(received_event) => {
                         match received_event {
                             ReceivedPacket::WithId { packet_id } => {
@@ -323,39 +357,10 @@ impl MqttSession {
         }
     }
 
-    pub fn await_subscribe_completed_with_timeout(&mut self, subscribe_packet_id: i16, timeout: &Duration)
-            -> Result<u8, String> {
-        let finish_timestamp_sec = time::get_time().sec + timeout.as_secs() as i64;
-        loop {
-            match self.subscribed.get(&subscribe_packet_id) {
-                Some(subscribe_token) => {
-                    match subscribe_token.return_code {
-                        Some(code) => {
-                            return Ok(code);
-                        } _ => {}
-                    }
-                }, None => {}
-            }
-            loop {
-                match self.await_event(Some(finish_timestamp_sec)) {
-                    Ok(received_event) => {
-                        match received_event {
-                            ReceivedPacket::WithId { packet_id } => {
-                                if packet_id == subscribe_packet_id {
-                                    break;
-                                }
-                            },
-                            _ => {}
-                        }
-                    }, Err(error) => {
-                        return Err(error.to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    pub fn await_unsubscribe_completed(&mut self, unsubscribe_packet_id: i16) -> Result<bool, String> {
+    pub fn await_unsubscribe_completed(&mut self, unsubscribe_packet_id: i16,
+            timeout: Option<Duration>) -> Result<bool, String> {
+        let finish_timestamp_sec: Option<i64> =
+            timeout.map(|timeout| time::get_time().sec + timeout.as_secs() as i64);
         loop {
             match self.unsubscribed.get(&unsubscribe_packet_id) {
                 Some(unsubscribe_token) => {
@@ -363,7 +368,7 @@ impl MqttSession {
                 }, None => {}
             }
             loop {
-                match self.await_event(None) {
+                match self.await_event(finish_timestamp_sec) {
                     Ok(received_event) => {
                         match received_event {
                             ReceivedPacket::WithId { packet_id } => {
@@ -373,55 +378,6 @@ impl MqttSession {
                             },
                             _ => {}
                         }
-                    }, Err(error) => {
-                        return Err(error.to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    pub fn await_unsubscribe_completed_with_timeout(&mut self, unsubscribe_packet_id: i16, timeout: &Duration)
-            -> Result<bool, String> {
-        let finish_timestamp_sec = time::get_time().sec + timeout.as_secs() as i64;
-        loop {
-            match self.unsubscribed.get(&unsubscribe_packet_id) {
-                Some(unsubscribe_token) => {
-                    return Ok(unsubscribe_token.unsubscribed);
-                }, None => {}
-            }
-            loop {
-                match self.await_event(Some(finish_timestamp_sec)) {
-                    Ok(received_event) => {
-                        match received_event {
-                            ReceivedPacket::WithId { packet_id } => {
-                                if packet_id == unsubscribe_packet_id {
-                                    break;
-                                }
-                            },
-                            _ => {}
-                        }
-                    }, Err(error) => {
-                        return Err(error.to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    pub fn await_new_message(&mut self) -> Result<ReceivedMessage, String> {
-        loop {
-            match self.received.pop() {
-                Some(received_message) => {
-                    // TODO adjust packet id to the packet id from received message
-                    // TODO return message only if it has been already acknowlegded/completed (qos 1/2)
-                    return Ok(received_message);
-                }, None => {}
-            }
-            loop {
-                match self.await_event(None) {
-                    Ok(_) => {
-                        break;
                     }, Err(error) => {
                         return Err(error.to_string());
                     }
@@ -432,9 +388,10 @@ impl MqttSession {
 
     // timeout considers only second-part of the Duration
     // TODO should I check the nanosecond part too?
-    pub fn await_new_message_with_timeout(&mut self, timeout: &Duration)
+    pub fn await_new_message(&mut self, timeout: Option<Duration>)
             -> Result<ReceivedMessage, String> {
-        let finish_timestamp_sec = time::get_time().sec + timeout.as_secs() as i64;
+        let finish_timestamp_sec: Option<i64> =
+            timeout.map(|timeout| time::get_time().sec + timeout.as_secs() as i64);
         loop {
             match self.received.pop() {
                 Some(received_message) => {
@@ -443,7 +400,7 @@ impl MqttSession {
                 }, None => {}
             }
             loop {
-                match self.await_event(Some(finish_timestamp_sec)) {
+                match self.await_event(finish_timestamp_sec) {
                     Ok(_) => {
                         break;
                     }, Err(error) => {
@@ -454,7 +411,10 @@ impl MqttSession {
         }
     }
 
-    pub fn await_publish_completion(&mut self, publish_packet_id: i16) -> Result<PublishResult, String> {
+    pub fn await_publish_completion(&mut self, publish_packet_id: i16,
+            timeout: Option<Duration>) -> Result<PublishResult, String> {
+        let finish_timestamp_sec: Option<i64> =
+            timeout.map(|timeout| time::get_time().sec + timeout.as_secs() as i64);
         loop {
             match self.published.get(&publish_packet_id) {
                 Some(published_token) => {
@@ -476,49 +436,7 @@ impl MqttSession {
                 }
             }
             loop {
-                match self.await_event(None) {
-                    Ok(received_event) => {
-                        match received_event {
-                            ReceivedPacket::WithId { packet_id } => {
-                                if packet_id == publish_packet_id {
-                                    break;
-                                }
-                            },
-                            _ => {}
-                        }
-                    }, Err(error) => {
-                        return Err(error.to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    pub fn await_publish_completion_with_timeout(&mut self, publish_packet_id: i16, timeout: &Duration)
-            -> Result<PublishResult, String> {
-        let finish_timestamp_sec = time::get_time().sec + timeout.as_secs() as i64;
-        loop {
-            match self.published.get(&publish_packet_id) {
-                Some(published_token) => {
-                    match published_token.publish_state {
-                        PublishState::Acknowledgement => {
-                            // TODO qos is hopefully 1 in this case
-                            return Ok(PublishResult::Ready);
-                        },
-                        PublishState::Complete => {
-                            // TODO qos is hopefully 2 in this case
-                            return Ok(PublishResult::Ready);
-                        },
-                        _ => {}
-                    }
-                }, None => {
-                    // no message with given id sent
-                    // TODO what should I do in this case?
-                    return Ok(PublishResult::Ready);
-                }
-            }
-            loop {
-                match self.await_event(Some(finish_timestamp_sec)) {
+                match self.await_event(finish_timestamp_sec) {
                     Ok(received_event) => {
                         match received_event {
                             ReceivedPacket::WithId { packet_id } => {
