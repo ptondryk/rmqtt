@@ -42,7 +42,7 @@ pub struct MqttSessionBuilder {
     keep_alive: i16
 }
 
-/// This structure represents a mqtt session.
+/// This structure represents a mqtt session. It can be created using `MqttSessionBuilder`.
 pub struct MqttSession {
     host: String,
     packet_id: i16,
@@ -259,6 +259,7 @@ impl MqttSessionBuilder {
 
 impl MqttSession {
 
+    /// When connection is lost, this method can be used to reconnect.
     pub fn reconnect(&mut self) -> bool {
         match TcpStream::connect(&*self.host) {
             Ok(stream) => {
@@ -273,7 +274,11 @@ impl MqttSession {
         }
     }
 
-    // send SUBSCRIBE packet to mqtt-broker
+    /// This method sends a SUBSCRIBE packet to mqtt-broker.
+    /// # Note
+    /// Calling this method does not mean that the topic is immediately subscribed.
+    /// To make sure that the client subscribed successfully to topic method
+    /// `await_subscribe_completed` should be used.
     pub fn subscribe(&mut self, topic: &str, qos: u8) -> SubscribeResult {
         let next_packet_id = self.next_packet_id();
         self.connection.send(CtrlPacket::new_subscribe(topic, qos, next_packet_id));
@@ -285,7 +290,11 @@ impl MqttSession {
         }
     }
 
-    // send UNSUBSCRIBE packet to mqtt-broker
+    /// This method sends an UNSUBSCRIBE packet to mqtt-broker.
+    /// # Note
+    /// Calling this method does not mean that the topic is immediately unsubscribed.
+    /// To make sure that the client unsubscribed the topic successfully method
+    /// `await_unsubscribe_completed` should be used.
     pub fn unsubscribe(&mut self, topic: &str) -> UnsubscribeResult {
         let next_packet_id = self.next_packet_id();
         self.connection.send(CtrlPacket::new_unsubscribe(topic, next_packet_id));
@@ -297,7 +306,11 @@ impl MqttSession {
         }
     }
 
-    // send PUBLISH packet to mqtt-broker
+    /// This method sends a PUBLISH packet to mqtt-broker.
+    /// # Note
+    /// Calling this method does not mean that a message is immediately published.
+    /// To make sure that the message has been successfully published to the topic, method
+    /// `await_publish_completion` should be used.
     pub fn publish(&mut self, topic: &str, payload: Vec<u8>, qos: u8) -> PublishResult {
         match qos {
             1 | 2 => {
@@ -318,12 +331,12 @@ impl MqttSession {
         }
     }
 
-    // send DISCONNECT packet to mqtt-broker
+    /// This method sends DISCONNECT packet to mqtt-broker.
     pub fn disconnect(&mut self) {
         self.connection.send(CtrlPacket::DISCONNECT);
     }
 
-    /// Method waits (blocks the execution) until the topic is subscribed.
+    /// Method waits (blocks the execution) until the topic subscription is completed.
     pub fn await_subscribe_completed(&mut self, subscribe_packet_id: i16,
             timeout: Option<Duration>) -> Result<u8, String> {
         let finish_timestamp_sec: Option<i64> =
@@ -357,6 +370,8 @@ impl MqttSession {
         }
     }
 
+    /// Method waits (blocks the execution) until the topic is
+    /// successfully unsubscribed.
     pub fn await_unsubscribe_completed(&mut self, unsubscribe_packet_id: i16,
             timeout: Option<Duration>) -> Result<bool, String> {
         let finish_timestamp_sec: Option<i64> =
@@ -386,8 +401,7 @@ impl MqttSession {
         }
     }
 
-    // timeout considers only second-part of the Duration
-    // TODO should I check the nanosecond part too?
+    /// Method waits (blocks the execution) on a new message.
     pub fn await_new_message(&mut self, timeout: Option<Duration>)
             -> Result<ReceivedMessage, String> {
         let finish_timestamp_sec: Option<i64> =
@@ -411,6 +425,10 @@ impl MqttSession {
         }
     }
 
+    /// Method waits (blocks the execution) until the message publishing is completed.
+    /// # Note
+    /// timeout considers only second-part of the Duration
+    // TODO should I check the nanosecond part too?
     pub fn await_publish_completion(&mut self, publish_packet_id: i16,
             timeout: Option<Duration>) -> Result<PublishResult, String> {
         let finish_timestamp_sec: Option<i64> =
