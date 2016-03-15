@@ -54,6 +54,50 @@ pub struct MqttSession {
     unsubscribed: HashMap<i16, UnsubscribeToken>
 }
 
+/// Message reived from broker. It contains information about `topic` to which this
+/// message has been sent and `payload` of this message as bytes vector.
+pub struct ReceivedMessage {
+    topic: String,
+    payload: Vec<u8>
+}
+
+pub enum PublishResult {
+    Ready,
+    NotComplete {
+        packet_id: i16
+    }
+}
+
+pub struct SubscribeResult {
+    packet_id: i16
+}
+
+pub struct UnsubscribeResult {
+    packet_id: i16
+}
+
+/// Errors that can occure while trying to connect to mqtt broker.
+pub enum ConnectFailed {
+    UnexpectedPacket,
+    UnacceptableProtocol,
+    IdentifierRejected,
+    ServerUnavailable,
+    BadCredentials,
+    NotAuthorized,
+    InvalidReturnCode,
+    ConnectionError {
+        details: String
+    }
+}
+
+// Possible results of the `await_*` methods.
+pub enum ReceiveFailed {
+    Timeout,
+    ConnectionError {
+        details: String
+    }
+}
+
 struct MqttConnection {
     stream: TcpStream,
     last_message_sent: i64
@@ -75,36 +119,12 @@ enum PublishState {
     Complete
 }
 
-pub enum PublishResult {
-    Ready,
-    NotComplete {
-        packet_id: i16
-    }
-}
-
-enum RmqttError {
-    Timeout
-}
-
-pub struct ReceivedMessage {
-    topic: String,
-    payload: Vec<u8>
-}
-
 struct SubscribeToken {
     return_code: Option<u8>
 }
 
 struct UnsubscribeToken {
     unsubscribed: bool
-}
-
-pub struct SubscribeResult {
-    packet_id: i16
-}
-
-pub struct UnsubscribeResult {
-    packet_id: i16
 }
 
 enum ReceivedPacket {
@@ -174,7 +194,7 @@ impl MqttSessionBuilder {
 
     /// This method can be used to initialize the connetion between broker and client using
     /// parameters defined in this `MqttSessionBuilder`.
-    pub fn connect(self) -> Result<MqttSession, String> {
+    pub fn connect(self) -> Result<MqttSession, ConnectFailed> {
 
         // connect to the mqtt broker
         match TcpStream::connect(&*self.host) {
@@ -221,37 +241,47 @@ impl MqttSessionBuilder {
                                         Ok(new_mqtt_session)
                                     },
                                     0x01 => {
-                                        Err(String::from("Connection Refused, unacceptable protocol version"))
+                                        // Connection Refused, unacceptable protocol version
+                                        Err(ConnectFailed::UnacceptableProtocol)
                                     },
                                     0x02 => {
-                                        Err(String::from("Connection Refused, identifier rejected"))
+                                        // Connection Refused, identifier rejected
+                                        Err(ConnectFailed::IdentifierRejected)
                                     },
                                     0x03 => {
-                                        Err(String::from("Connection Refused, Server unavailable"))
+                                        // Connection Refused, Server unavailable
+                                        Err(ConnectFailed::ServerUnavailable)
                                     },
                                     0x04 => {
-                                        Err(String::from("Connection Refused, bad user name or password"))
+                                        // Connection Refused, bad user name or password
+                                        Err(ConnectFailed::BadCredentials)
                                     },
                                     0x05 => {
-                                        Err(String::from("Connection Refused, not authorized"))
+                                        // Connection Refused, not authorized
+                                        Err(ConnectFailed::NotAuthorized)
                                     },
                                     _ => {
-                                        Err(String::from("Connection Refused, invalid return code"))
+                                        // Connection Refused, invalid return code
+                                        Err(ConnectFailed::InvalidReturnCode)
                                     }
                                 }
                             },
                             _ => {
                                 // TODO is it possible? is it error?
-                                Err(String::from("Unexpected packet received"))
+                                Err(ConnectFailed::UnexpectedPacket)
                             }
                         }
                     },
                     Err(error) => {
-                        Err(error.to_string())
+                        Err(ConnectFailed::ConnectionError {
+                            details: String::from("No packet received")
+                        })
                     }
                 }
             }, Err(error) => {
-                Err(error.to_string())
+                Err(ConnectFailed::ConnectionError {
+                    details: error.to_string()
+                })
             }
         }
     }
@@ -338,7 +368,7 @@ impl MqttSession {
 
     /// Method waits (blocks the execution) until the topic subscription is completed.
     pub fn await_subscribe_completed(&mut self, subscribe_packet_id: i16,
-            timeout: Option<Duration>) -> Result<u8, String> {
+            timeout: Option<Duration>) -> Result<u8, ReceiveFailed> {
         let finish_timestamp_sec: Option<i64> =
             timeout.map(|timeout| time::get_time().sec + timeout.as_secs() as i64);
         loop {
@@ -363,7 +393,7 @@ impl MqttSession {
                             _ => {}
                         }
                     }, Err(error) => {
-                        return Err(error.to_string());
+                        return Err(error);
                     }
                 }
             }
@@ -373,7 +403,7 @@ impl MqttSession {
     /// Method waits (blocks the execution) until the topic is
     /// successfully unsubscribed.
     pub fn await_unsubscribe_completed(&mut self, unsubscribe_packet_id: i16,
-            timeout: Option<Duration>) -> Result<bool, String> {
+            timeout: Option<Duration>) -> Result<bool, ReceiveFailed> {
         let finish_timestamp_sec: Option<i64> =
             timeout.map(|timeout| time::get_time().sec + timeout.as_secs() as i64);
         loop {
@@ -394,7 +424,7 @@ impl MqttSession {
                             _ => {}
                         }
                     }, Err(error) => {
-                        return Err(error.to_string());
+                        return Err(error);
                     }
                 }
             }
@@ -403,7 +433,7 @@ impl MqttSession {
 
     /// Method waits (blocks the execution) on a new message.
     pub fn await_new_message(&mut self, timeout: Option<Duration>)
-            -> Result<ReceivedMessage, String> {
+            -> Result<ReceivedMessage, ReceiveFailed> {
         let finish_timestamp_sec: Option<i64> =
             timeout.map(|timeout| time::get_time().sec + timeout.as_secs() as i64);
         loop {
@@ -418,7 +448,7 @@ impl MqttSession {
                     Ok(_) => {
                         break;
                     }, Err(error) => {
-                        return Err(error.to_string());
+                        return Err(error);
                     }
                 }
             }
@@ -430,7 +460,7 @@ impl MqttSession {
     /// timeout considers only second-part of the Duration
     // TODO should I check the nanosecond part too?
     pub fn await_publish_completion(&mut self, publish_packet_id: i16,
-            timeout: Option<Duration>) -> Result<PublishResult, String> {
+            timeout: Option<Duration>) -> Result<PublishResult, ReceiveFailed> {
         let finish_timestamp_sec: Option<i64> =
             timeout.map(|timeout| time::get_time().sec + timeout.as_secs() as i64);
         loop {
@@ -465,7 +495,7 @@ impl MqttSession {
                             _ => {}
                         }
                     }, Err(error) => {
-                        return Err(error.to_string());
+                        return Err(error);
                     }
                 }
             }
@@ -473,7 +503,7 @@ impl MqttSession {
     }
 
     // timeout - time to which this method should end
-    fn await_event(&mut self, timeout: Option<i64>) -> Result<ReceivedPacket, String> {
+    fn await_event(&mut self, timeout: Option<i64>) -> Result<ReceivedPacket, ReceiveFailed> {
         loop {
             match self.connection.receive(timeout) {
                 Ok(packet) => {
@@ -559,7 +589,7 @@ impl MqttSession {
                     }
                 },
                 Err(error) => {
-                    return Err(error.to_string());
+                    return Err(error);
                 }
             }
 
@@ -597,8 +627,7 @@ impl MqttConnection {
         self.last_message_sent = time::get_time().sec;
     }
 
-    // TODO reconnect if error occured because of connection lost
-    fn receive(&mut self, timeout: Option<i64>) -> Result<CtrlPacket, String> {
+    fn receive(&mut self, timeout: Option<i64>) -> Result<CtrlPacket, ReceiveFailed> {
         let mut buffer: Vec<u8> = Vec::new();
         loop {
             for byte in std::io::Read::by_ref(&mut self.stream).bytes() {
@@ -617,7 +646,9 @@ impl MqttConnection {
                                 break;
                             },
                             _ => {
-                                return Err(error.to_string());
+                                return Err(ReceiveFailed::ConnectionError {
+                                    details: error.to_string()
+                                });
                             }
                         }
                     }
@@ -627,7 +658,7 @@ impl MqttConnection {
             match timeout {
                 Some(finish_timestamp_sec) => {
                     if time::get_time().sec >= finish_timestamp_sec {
-                        return Err(String::from("Timeout"));
+                        return Err(ReceiveFailed::Timeout);
                     }
                 }, None => {}
             }
