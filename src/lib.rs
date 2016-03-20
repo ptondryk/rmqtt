@@ -3,9 +3,11 @@ extern crate time;
 use std::net::TcpStream;
 use std::io::prelude::*;
 use std::io::ErrorKind;
-use std::thread;
 use std::time::Duration;
 use std::collections::HashMap;
+use time::Timespec;
+use std::ops::Add;
+use std::ops::Sub;
 
 use mqtt::*;
 mod mqtt;
@@ -54,26 +56,34 @@ pub struct MqttSession {
     unsubscribed: HashMap<i16, UnsubscribeToken>
 }
 
-/// Message reived from broker. It contains information about `topic` to which this
+/// Message received from broker. It contains information about `topic` to which this
 /// message has been sent and `payload` of this message as bytes vector.
 pub struct ReceivedMessage {
-    topic: String,
-    payload: Vec<u8>
+    pub topic: String,
+    pub payload: Vec<u8>
 }
 
+/// `PublishResult` of messages published with quality of service 0 is always `Ready` (the
+/// publishing is complete). Other messages must be acknowledged by broker. In this case
+/// the result of publishing must by checked using method `await_publish_completion`. This method
+/// uses `packet_id` contained in `PublishResult::NotComplete`, returned by `publish` method,
+/// as its argument.
 pub enum PublishResult {
+    /// Messages published with quality of service 0 are always `Ready`.
     Ready,
     NotComplete {
         packet_id: i16
     }
 }
 
+/// Result of `subscribe` method.
 pub struct SubscribeResult {
-    packet_id: i16
+    pub packet_id: i16
 }
 
+/// Result of `unsubscribe` method.
 pub struct UnsubscribeResult {
-    packet_id: i16
+    pub packet_id: i16
 }
 
 /// Errors that can occure while trying to connect to mqtt broker.
@@ -90,7 +100,7 @@ pub enum ConnectFailed {
     }
 }
 
-// Possible results of the `await_*` methods.
+/// Possible results of the `MqttSession.await_*` methods.
 pub enum ReceiveFailed {
     Timeout,
     ConnectionError {
@@ -107,8 +117,9 @@ struct PublishToken {
     topic: String,
     payload: Vec<u8>,
     publish_state: PublishState,
-    qos: u8,
-    last_message: i64
+    qos: u8
+    // TODO is this necessary?
+    // last_message: i64
 }
 
 enum PublishState {
@@ -194,13 +205,12 @@ impl MqttSessionBuilder {
 
     /// This method can be used to initialize the connetion between broker and client using
     /// parameters defined in this `MqttSessionBuilder`.
+    #[allow(unused_variables)]
     pub fn connect(self) -> Result<MqttSession, ConnectFailed> {
 
         // connect to the mqtt broker
         match TcpStream::connect(&*self.host) {
             Ok(stream) => {
-                stream.set_read_timeout(Some(Duration::new(0, 100000000)));
-
                 let new_mqtt_connection = MqttConnection {
                     stream: stream,
                     last_message_sent: time::get_time().sec
@@ -290,6 +300,8 @@ impl MqttSessionBuilder {
 impl MqttSession {
 
     /// When connection is lost, this method can be used to reconnect.
+    // TODO test this method...
+    #[allow(unused_must_use)]
     pub fn reconnect(&mut self) -> bool {
         match TcpStream::connect(&*self.host) {
             Ok(stream) => {
@@ -298,7 +310,7 @@ impl MqttSession {
                 self.redeliver_packets();
                 true
             },
-            Err(error) => {
+            Err(_) => {
                 false
             }
         }
@@ -349,8 +361,7 @@ impl MqttSession {
                     topic: topic.to_string(),
                     payload: payload.clone(),
                     publish_state: PublishState::Sent,
-                    qos: qos,
-                    last_message: 0
+                    qos: qos
                 });
                 self.connection.send(CtrlPacket::new_publish(topic, payload, next_packet_id, qos));
                 PublishResult::NotComplete { packet_id: next_packet_id }
@@ -369,8 +380,9 @@ impl MqttSession {
     /// Method waits (blocks the execution) until the topic subscription is completed.
     pub fn await_subscribe_completed(&mut self, subscribe_packet_id: i16,
             timeout: Option<Duration>) -> Result<u8, ReceiveFailed> {
-        let finish_timestamp_sec: Option<i64> =
-            timeout.map(|timeout| time::get_time().sec + timeout.as_secs() as i64);
+        let finish_timestamp: Option<Timespec> =
+            timeout.map(|timeout| time::get_time().add(time::Duration::nanoseconds(
+                (timeout.as_secs() * 1000000000 + timeout.subsec_nanos() as u64) as i64)));
         loop {
             match self.subscribed.get(&subscribe_packet_id) {
                 Some(subscribe_token) => {
@@ -382,7 +394,7 @@ impl MqttSession {
                 }, None => {}
             }
             loop {
-                match self.await_event(finish_timestamp_sec) {
+                match self.await_event(finish_timestamp) {
                     Ok(received_event) => {
                         match received_event {
                             ReceivedPacket::WithId { packet_id } => {
@@ -404,16 +416,20 @@ impl MqttSession {
     /// successfully unsubscribed.
     pub fn await_unsubscribe_completed(&mut self, unsubscribe_packet_id: i16,
             timeout: Option<Duration>) -> Result<bool, ReceiveFailed> {
-        let finish_timestamp_sec: Option<i64> =
-            timeout.map(|timeout| time::get_time().sec + timeout.as_secs() as i64);
+        let finish_timestamp: Option<Timespec> =
+            timeout.map(|timeout| time::get_time().add(time::Duration::nanoseconds(
+                (timeout.as_secs() * 1000000000 + timeout.subsec_nanos() as u64) as i64)));
         loop {
             match self.unsubscribed.get(&unsubscribe_packet_id) {
                 Some(unsubscribe_token) => {
-                    return Ok(unsubscribe_token.unsubscribed);
+                    match unsubscribe_token.unsubscribed {
+                        true => { return Ok(true); },
+                        false => {}
+                    }
                 }, None => {}
             }
             loop {
-                match self.await_event(finish_timestamp_sec) {
+                match self.await_event(finish_timestamp) {
                     Ok(received_event) => {
                         match received_event {
                             ReceivedPacket::WithId { packet_id } => {
@@ -434,8 +450,9 @@ impl MqttSession {
     /// Method waits (blocks the execution) on a new message.
     pub fn await_new_message(&mut self, timeout: Option<Duration>)
             -> Result<ReceivedMessage, ReceiveFailed> {
-        let finish_timestamp_sec: Option<i64> =
-            timeout.map(|timeout| time::get_time().sec + timeout.as_secs() as i64);
+        let finish_timestamp: Option<Timespec> =
+            timeout.map(|timeout| time::get_time().add(time::Duration::nanoseconds(
+                (timeout.as_secs() * 1000000000 + timeout.subsec_nanos() as u64) as i64)));
         loop {
             match self.received.pop() {
                 Some(received_message) => {
@@ -444,7 +461,7 @@ impl MqttSession {
                 }, None => {}
             }
             loop {
-                match self.await_event(finish_timestamp_sec) {
+                match self.await_event(finish_timestamp) {
                     Ok(_) => {
                         break;
                     }, Err(error) => {
@@ -461,8 +478,9 @@ impl MqttSession {
     // TODO should I check the nanosecond part too?
     pub fn await_publish_completion(&mut self, publish_packet_id: i16,
             timeout: Option<Duration>) -> Result<PublishResult, ReceiveFailed> {
-        let finish_timestamp_sec: Option<i64> =
-            timeout.map(|timeout| time::get_time().sec + timeout.as_secs() as i64);
+        let finish_timestamp: Option<Timespec> =
+            timeout.map(|timeout| time::get_time().add(time::Duration::nanoseconds(
+                (timeout.as_secs() * 1000000000 + timeout.subsec_nanos() as u64) as i64)));
         loop {
             match self.published.get(&publish_packet_id) {
                 Some(published_token) => {
@@ -484,7 +502,7 @@ impl MqttSession {
                 }
             }
             loop {
-                match self.await_event(finish_timestamp_sec) {
+                match self.await_event(finish_timestamp) {
                     Ok(received_event) => {
                         match received_event {
                             ReceivedPacket::WithId { packet_id } => {
@@ -502,8 +520,9 @@ impl MqttSession {
         }
     }
 
-    // timeout - time to which this method should end
-    fn await_event(&mut self, timeout: Option<i64>) -> Result<ReceivedPacket, ReceiveFailed> {
+    // timeout - time when this method must end
+    #[allow(unused_variables)]
+    fn await_event(&mut self, timeout: Option<Timespec>) -> Result<ReceivedPacket, ReceiveFailed> {
         loop {
             match self.connection.receive(timeout) {
                 Ok(packet) => {
@@ -553,6 +572,12 @@ impl MqttSession {
                             });
                         },
                         CtrlPacket::PUBREL { packet_id } => {
+                            match self.published.get_mut(&packet_id) {
+                                Some(mut published_token) => {
+                                    published_token.publish_state =
+                                        PublishState::Release
+                                }, None => {}
+                            }
                             self.connection.send(CtrlPacket::PUBCOMP {
                                 packet_id: packet_id
                             });
@@ -584,6 +609,9 @@ impl MqttSession {
                                     unsubscribe_token.unsubscribed = true;
                                 }, None => {}
                             }
+                            return Ok(ReceivedPacket::WithId {
+                                packet_id: packet_id
+                            });
                         }
                         _ => {}
                     }
@@ -598,8 +626,6 @@ impl MqttSession {
             if current_timestamp_second > self.connection.last_message_sent + self.keep_alive as i64 {
                 self.connection.send(CtrlPacket::PINGREQ);
             }
-
-            thread::sleep(Duration::from_millis(500));
         }
     }
 
@@ -620,6 +646,7 @@ impl MqttSession {
 impl MqttConnection {
 
     fn send(&mut self, ctrl_packet: CtrlPacket) {
+        println!("SEND: {:?}", ctrl_packet);
         let bytes: &[u8] = &ctrl_packet.as_bytes().into_boxed_slice();
         let _ = self.stream.write(bytes);
 
@@ -627,15 +654,30 @@ impl MqttConnection {
         self.last_message_sent = time::get_time().sec;
     }
 
-    fn receive(&mut self, timeout: Option<i64>) -> Result<CtrlPacket, ReceiveFailed> {
+    /// Method receives a package from broker.
+    #[allow(unused_must_use)]
+    fn receive(&mut self, timeout: Option<Timespec>) -> Result<CtrlPacket, ReceiveFailed> {
         let mut buffer: Vec<u8> = Vec::new();
         loop {
+            match timeout {
+                Some(finish_timestamp) => {
+                    let time_duration = finish_timestamp.sub(time::get_time());
+                    let duration = Duration::new(time_duration.num_seconds() as u64,
+                        (time_duration.num_nanoseconds().unwrap()
+                            - time_duration.num_seconds() * 1000000000) as u32);
+                    self.stream.set_read_timeout(Some(duration));
+                }, None => {
+                    self.stream.set_read_timeout(None);
+                }
+            }
+
             for byte in std::io::Read::by_ref(&mut self.stream).bytes() {
                 match byte {
                     Ok(received_byte) => {
                         buffer.push(received_byte);
                         match mqtt::parse(&mut buffer) {
                             Some(packet) => {
+                                println!("RECEIVED: {:?}", packet);
                                 return Ok(packet);
                             }, None => {}
                         }
@@ -656,13 +698,12 @@ impl MqttConnection {
             }
             // TODO optimize the timeout check
             match timeout {
-                Some(finish_timestamp_sec) => {
-                    if time::get_time().sec >= finish_timestamp_sec {
+                Some(ref finish_timestamp) => {
+                    if time::get_time().lt(finish_timestamp) {
                         return Err(ReceiveFailed::Timeout);
                     }
                 }, None => {}
             }
-            thread::sleep(Duration::from_millis(500));
         }
     }
 
@@ -676,5 +717,12 @@ impl ReceivedMessage {
             payload: payload
         }
     }
+
+}
+
+#[cfg(test)]
+mod tests {
+
+    // TODO write tests
 
 }

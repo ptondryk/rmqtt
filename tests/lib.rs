@@ -5,7 +5,7 @@ use rmqtt::ConnectFailed;
 
 #[test]
 fn test_connection_refused() {
-    match MqttSessionBuilder::new("test-client-01", "localhost:1883")
+    match MqttSessionBuilder::new("test-client-01", "localhost:1884")
             .credentials("user", "password")
             .keep_alive(120)
             .connect() {
@@ -25,3 +25,5 @@ fn test_connection_refused() {
         }
     }
 }
+
+// TODO write more tests

@@ -1,6 +1,7 @@
 //! This module contains implementation of the MQTT protocol (version 3.1.1).
 
 /// This enum represents a single mqtt control packet.
+#[derive(Debug)]
 pub enum CtrlPacket {
     CONNECT {
         client_id: String,
@@ -217,9 +218,18 @@ impl CtrlPacket {
             },
             CtrlPacket::PUBLISH { packet_id, topic, mut payload,
                     duplicate_delivery, qos, retain } => {
+
                 // id = 3
-                // TODO set DUP flag / qos / retain flag properly
-                result.push(0x30);
+                // DUP flag / qos / retain flags
+                let mut flags = 0;
+                if duplicate_delivery {
+                    flags += 8;
+                }
+                if retain {
+                    flags += 1;
+                }
+                flags += qos * 2;
+                result.push(0x30 + flags);
 
                 // topic name
                 result.append(&mut encode_string(&topic));
@@ -254,8 +264,8 @@ impl CtrlPacket {
                 result.push(packet_id as u8);
             },
             CtrlPacket::PUBREL { packet_id } => {
-                // id = 6
-                result.push(0x60);
+                // id = 6, reserved = 2
+                result.push(0x62);
 
                 // packet identifier
                 result.push((packet_id / 256) as u8);
@@ -368,7 +378,7 @@ impl CtrlPacket {
                         _ => None
                     }
                 },
-                0x60 => {
+                0x62 => {
                     match bytes.len() {
                         4 => Some(CtrlPacket::PUBREL {
                                 packet_id: bytes[2] as i16 * 256 + bytes[3] as i16
@@ -441,6 +451,7 @@ fn parse_packet_id(packet_id_as_bytes: &Vec<u8>) -> i16 {
     packet_id_as_bytes[0] as i16 * 256 + packet_id_as_bytes[1] as i16
 }
 
+#[allow(unused_assignments)]
 fn encode_remaining_length(input_length: usize) -> Vec<u8> {
     let mut result: Vec<u8> = Vec::new();
     let mut tmp: i16 = 0;
@@ -461,6 +472,7 @@ fn encode_remaining_length(input_length: usize) -> Vec<u8> {
 }
 
 // TODO return the number of bytes that are used to encode the "remaining length"
+#[allow(unused_assignments)]
 fn decode_remaining_length(remaining_length: &Vec<u8>, offset: i8) -> Option<i32> {
     let mut multiplier: i32 = 1;
     let mut value: i32 = 0;
@@ -526,10 +538,6 @@ fn insert_all(source: Vec<u8>, target: &mut Vec<u8>, index: usize) {
     for i in (0..source.len()).rev() {
         target.insert(index, source[i]);
     }
-}
-
-fn array_to_vec(arr: &[u8]) -> Vec<u8> {
-     arr.iter().cloned().collect()
 }
 
 #[cfg(test)]
