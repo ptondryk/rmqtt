@@ -9,14 +9,13 @@ Following example shows how to connect to the mqtt broker,
 subscribe to a topic and receive a message.
 
 Add to Cargo.toml folowing lines:
-```
+```toml
 [dependencies.rmqtt]
 git = "https://github.com/ptondryk/rmqtt.git"
-
 ```
 
 main.rs
-```
+```rust
 extern crate rmqtt;
 
 use rmqtt::*;
