@@ -1,10 +1,26 @@
 # rmqtt
 
-work in progress
+Rust implementation of MQTT client. `rmqtt` implements version 3.1.1 of the
+MQTT protocol. It offers a synchronous, single-thread, blocking API.
 
 ## example
 
+Following example shows how to connect to the mqtt broker,
+subscribe to a topic and receive a message.
+
+Add to Cargo.toml folowing lines:
 ```
+[dependencies.rmqtt]
+git = "https://github.com/ptondryk/rmqtt.git"
+
+```
+
+main.rs
+```
+extern crate rmqtt;
+
+use rmqtt::*;
+
 fn main() {
     match MqttSessionBuilder::new("test-client-01", "localhost:1883")
             .credentials("user", "password")
@@ -12,18 +28,18 @@ fn main() {
             .connect() {
         Ok(ref mut mqtt_session) => {
             let qos: u8 = 0;
-            mqtt_session.subscribe("testTopic1", qos);
-            match mqtt_connection.await_new_message() {
+            mqtt_session.subscribe("test-topic-1", qos);
+            match mqtt_session.await_new_message(None) {
                 Ok(message) => {
                     println!("topic = {:?}, payload = {:?}", message.topic,
                         String::from_utf8(message.payload).unwrap());
-                }, Err(error_message) => {
-                    println!("{:?}", error_message);
+                }, Err(error) => {
+                    println!("No message received");
                 }
             }
         },
-        Err(message) => {
-            println!("Connection failed, cause: {:?}", message);
+        Err(error) => {
+            println!("Connection failed");
         }
     }
 }
