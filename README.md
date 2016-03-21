@@ -1,14 +1,16 @@
 # rmqtt
 
-Rust implementation of MQTT client. `rmqtt` implements version 3.1.1 of the
-MQTT protocol. It offers a synchronous, single-thread, blocking API.
+Rust implementation of MQTT client.
 
-## example
+`rmqtt` implements version 3.1.1 of the MQTT protocol. It offers a
+synchronous, single-thread, blocking API.
+
+## Usage
 
 Following example shows how to connect to the mqtt broker,
 subscribe to a topic and receive a message.
 
-Add to Cargo.toml folowing lines:
+Add to `Cargo.toml` following lines:
 ```toml
 [dependencies.rmqtt]
 git = "https://github.com/ptondryk/rmqtt.git"
@@ -43,3 +45,12 @@ fn main() {
     }
 }
 ```
+
+## Documentation
+
+<http://ptondryk.github.io/rmqtt/rmqtt/>
+
+## References
+
+<http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/mqtt-v3.1.1.html>
+<https://www.rust-lang.org>
