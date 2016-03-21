@@ -1,7 +1,0 @@
-[package]
-name = "rmqtt"
-version = "0.1.0"
-authors = ["Pawel Tondryk <ptondryk@ymail.com>"]
-
-[dependencies]
-time = "0.1"

@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="generator" content="rustdoc">
+    <meta name="description" content="API documentation for the Rust `rmqtt` crate.">
+    <meta name="keywords" content="rust, rustlang, rust-lang, rmqtt">
+
+    <title>rmqtt - Rust</title>
+
+    <link rel="stylesheet" type="text/css" href="../rustdoc.css">
+    <link rel="stylesheet" type="text/css" href="../main.css">
+
+    
+    
+</head>
+<body class="rustdoc">
+    <!--[if lte IE 8]>
+    <div class="warning">
+        This old browser is unsupported and will most likely display funky
+        things.
+    </div>
+    <![endif]-->
+
+    
+
+    <nav class="sidebar">
+        
+        <p class='location'></p><script>window.sidebarCurrent = {name: 'rmqtt', ty: 'mod', relpath: '../'};</script>
+    </nav>
+
+    <nav class="sub">
+        <form class="search-form js-only">
+            <div class="search-container">
+                <input class="search-input" name="search"
+                       autocomplete="off"
+                       placeholder="Click or press ‘S’ to search, ‘?’ for more options…"
+                       type="search">
+            </div>
+        </form>
+    </nav>
+
+    <section id='main' class="content mod">
+<h1 class='fqn'><span class='in-band'>Crate <a class='mod' href=''>rmqtt</a></span><span class='out-of-band'><span id='render-detail'>
+            <a id="toggle-all-docs" href="javascript:void(0)" title="collapse all docs">
+                [<span class='inner'>&#x2212;</span>]
+            </a>
+        </span><a id='src-0' class='srclink' href='../src/rmqtt/lib.rs.html#1-728' title='goto source code'>[src]</a></span></h1>
+<h2 id='structs' class='section-header'><a href="#structs">Structs</a></h2>
+<table>
+                    <tr class=' module-item'>
+                        <td><a class='struct' href='struct.MqttSession.html'
+                               title='rmqtt::MqttSession'>MqttSession</a></td>
+                        <td class='docblock short'>
+                             <p>This structure represents a mqtt session. It can be created using <code>MqttSessionBuilder</code>.</p>
+
+                        </td>
+                    </tr>
+                
+                    <tr class=' module-item'>
+                        <td><a class='struct' href='struct.MqttSessionBuilder.html'
+                               title='rmqtt::MqttSessionBuilder'>MqttSessionBuilder</a></td>
+                        <td class='docblock short'>
+                             <p>A structure that can be used to connect to mqtt-broker and build a session.</p>
+
+                        </td>
+                    </tr>
+                
+                    <tr class=' module-item'>
+                        <td><a class='struct' href='struct.ReceivedMessage.html'
+                               title='rmqtt::ReceivedMessage'>ReceivedMessage</a></td>
+                        <td class='docblock short'>
+                             <p>Message received from broker. It contains information about <code>topic</code> to which this
+message has been sent and <code>payload</code> of this message as bytes vector.</p>
+
+                        </td>
+                    </tr>
+                
+                    <tr class=' module-item'>
+                        <td><a class='struct' href='struct.SubscribeResult.html'
+                               title='rmqtt::SubscribeResult'>SubscribeResult</a></td>
+                        <td class='docblock short'>
+                             <p>Result of <code>subscribe</code> method.</p>
+
+                        </td>
+                    </tr>
+                
+                    <tr class=' module-item'>
+                        <td><a class='struct' href='struct.UnsubscribeResult.html'
+                               title='rmqtt::UnsubscribeResult'>UnsubscribeResult</a></td>
+                        <td class='docblock short'>
+                             <p>Result of <code>unsubscribe</code> method.</p>
+
+                        </td>
+                    </tr>
+                </table><h2 id='enums' class='section-header'><a href="#enums">Enums</a></h2>
+<table>
+                    <tr class=' module-item'>
+                        <td><a class='enum' href='enum.ConnectFailed.html'
+                               title='rmqtt::ConnectFailed'>ConnectFailed</a></td>
+                        <td class='docblock short'>
+                             <p>Errors that can occure while trying to connect to mqtt broker.</p>
+
+                        </td>
+                    </tr>
+                
+                    <tr class=' module-item'>
+                        <td><a class='enum' href='enum.PublishResult.html'
+                               title='rmqtt::PublishResult'>PublishResult</a></td>
+                        <td class='docblock short'>
+                             <p><code>PublishResult</code> of messages published with quality of service 0 is always <code>Ready</code> (the
+publishing is complete). Other messages must be acknowledged by broker. In this case
+the result of publishing must by checked using method <code>await_publish_completion</code>. This method
+uses <code>packet_id</code> contained in <code>PublishResult::NotComplete</code>, returned by <code>publish</code> method,
+as its argument.</p>
+
+                        </td>
+                    </tr>
+                
+                    <tr class=' module-item'>
+                        <td><a class='enum' href='enum.ReceiveFailed.html'
+                               title='rmqtt::ReceiveFailed'>ReceiveFailed</a></td>
+                        <td class='docblock short'>
+                             <p>Possible results of the <code>MqttSession.await_*</code> methods.</p>
+
+                        </td>
+                    </tr>
+                </table></section>
+    <section id='search' class="content hidden"></section>
+
+    <section class="footer"></section>
+
+    <aside id="help" class="hidden">
+        <div>
+            <h1 class="hidden">Help</h1>
+
+            <div class="shortcuts">
+                <h2>Keyboard Shortcuts</h2>
+
+                <dl>
+                    <dt>?</dt>
+                    <dd>Show this help dialog</dd>
+                    <dt>S</dt>
+                    <dd>Focus the search field</dd>
+                    <dt>&larrb;</dt>
+                    <dd>Move up in search results</dd>
+                    <dt>&rarrb;</dt>
+                    <dd>Move down in search results</dd>
+                    <dt>&#9166;</dt>
+                    <dd>Go to active search result</dd>
+                </dl>
+            </div>
+
+            <div class="infos">
+                <h2>Search Tricks</h2>
+
+                <p>
+                    Prefix searches with a type followed by a colon (e.g.
+                    <code>fn:</code>) to restrict the search to a given type.
+                </p>
+
+                <p>
+                    Accepted types are: <code>fn</code>, <code>mod</code>,
+                    <code>struct</code>, <code>enum</code>,
+                    <code>trait</code>, <code>type</code>, <code>macro</code>,
+                    and <code>const</code>.
+                </p>
+
+                <p>
+                    Search functions by type signature (e.g.
+                    <code>vec -> usize</code>)
+                </p>
+            </div>
+        </div>
+    </aside>
+
+    
+
+    <script>
+        window.rootPath = "../";
+        window.currentCrate = "rmqtt";
+        window.playgroundUrl = "";
+    </script>
+    <script src="../jquery.js"></script>
+    <script src="../main.js"></script>
+    
+    <script defer src="../search-index.js"></script>
+</body>
+</html>
