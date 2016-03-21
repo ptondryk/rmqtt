@@ -646,7 +646,6 @@ impl MqttSession {
 impl MqttConnection {
 
     fn send(&mut self, ctrl_packet: CtrlPacket) {
-        println!("SEND: {:?}", ctrl_packet);
         let bytes: &[u8] = &ctrl_packet.as_bytes().into_boxed_slice();
         let _ = self.stream.write(bytes);
 
@@ -677,7 +676,6 @@ impl MqttConnection {
                         buffer.push(received_byte);
                         match mqtt::parse(&mut buffer) {
                             Some(packet) => {
-                                println!("RECEIVED: {:?}", packet);
                                 return Ok(packet);
                             }, None => {}
                         }

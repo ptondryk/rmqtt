@@ -1,7 +1,6 @@
 //! This module contains implementation of the MQTT protocol (version 3.1.1).
 
 /// This enum represents a single mqtt control packet.
-#[derive(Debug)]
 pub enum CtrlPacket {
     CONNECT {
         client_id: String,
