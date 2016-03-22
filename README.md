@@ -46,12 +46,15 @@ fn main() {
 }
 ```
 
+You can find more examples in wiki.
+
+https://github.com/ptondryk/rmqtt/wiki/examples
+
 ## Documentation
 
 <http://ptondryk.github.io/rmqtt/rmqtt/>
 
 ## References
 
-<http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/mqtt-v3.1.1.html>
-
-<https://www.rust-lang.org>
+* <http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/mqtt-v3.1.1.html>
+* <https://www.rust-lang.org>
