@@ -6,6 +6,7 @@ use std::io::ErrorKind;
 use std::time::Duration;
 use std::collections::HashMap;
 use time::Timespec;
+use time::Duration as TimeDuration;
 use std::ops::Add;
 use std::ops::Sub;
 
@@ -241,8 +242,10 @@ impl MqttSessionBuilder {
                     keep_alive: self.keep_alive
                 });
 
-                // try receive CONNACK
-                match new_mqtt_session.connection.receive(None) {
+                // try receive CONNACK (timeout 30 sec)
+                // TODO make the timeout configurable
+                match new_mqtt_session.connection.receive(
+                        time::get_time().add(TimeDuration::seconds(30))) {
                     Ok(packet) => {
                         match packet {
                             CtrlPacket::CONNACK {session_present, return_code} => {
@@ -473,9 +476,6 @@ impl MqttSession {
     }
 
     /// Method waits (blocks the execution) until the message publishing is completed.
-    /// # Note
-    /// timeout considers only second-part of the Duration
-    // TODO should I check the nanosecond part too?
     pub fn await_publish_completion(&mut self, publish_packet_id: i16,
             timeout: Option<Duration>) -> Result<PublishResult, ReceiveFailed> {
         let finish_timestamp: Option<Timespec> =
@@ -520,112 +520,171 @@ impl MqttSession {
         }
     }
 
-    // timeout - time when this method must end
-    #[allow(unused_variables)]
+    /// timeout - time when this method must end
     fn await_event(&mut self, timeout: Option<Timespec>) -> Result<ReceivedPacket, ReceiveFailed> {
         loop {
-            match self.connection.receive(timeout) {
+            // make sure that the timeout does not exceed the the time of next ping
+            let adjusted_timeout = self.adjust_timeout(timeout);
+            match self.connection.receive(adjusted_timeout) {
                 Ok(packet) => {
-                    match packet {
-                        CtrlPacket::PUBLISH { packet_id, topic, payload,
-                                    duplicate_delivery, qos, retain } => {
-                            if qos == 1 {
-                                self.connection.send(CtrlPacket::PUBACK {
-                                    packet_id: packet_id.unwrap()
-                                });
-                            } else if qos == 2 {
-                                self.connection.send(CtrlPacket::PUBREC {
-                                    packet_id: packet_id.unwrap()
-                                });
-                            }
-                            self.received.push(ReceivedMessage::new(topic, payload));
-                            match packet_id {
-                                Some(publish_packet_id) => {
-                                    return Ok(ReceivedPacket::WithId {
-                                        packet_id: publish_packet_id
-                                    });
-                                }, None => {
-                                    return Ok(ReceivedPacket::WithoutId);
-                                }
-                            }
-                        },
-                        // TODO what to do if I receive PUBACK/COMP/.. with id that I dont know?
-                        // TODO is it possible?
-                        CtrlPacket::PUBACK { packet_id } => {
-                            match self.published.get_mut(&packet_id) {
-                                Some(mut published_token) => {
-                                    published_token.publish_state = PublishState::Acknowledgement;
-                                }, None => {}
-                            }
-                            return Ok(ReceivedPacket::WithId {
-                                packet_id: packet_id
-                            });
-                        },
-                        CtrlPacket::PUBREC { packet_id } => {
-                            match self.published.get_mut(&packet_id) {
-                                Some(mut published_token) => {
-                                    published_token.publish_state = PublishState::Received;
-                                }, None => {}
-                            }
-                            self.connection.send(CtrlPacket::PUBREL {
-                                packet_id: packet_id
-                            });
-                        },
-                        CtrlPacket::PUBREL { packet_id } => {
-                            match self.published.get_mut(&packet_id) {
-                                Some(mut published_token) => {
-                                    published_token.publish_state =
-                                        PublishState::Release
-                                }, None => {}
-                            }
-                            self.connection.send(CtrlPacket::PUBCOMP {
-                                packet_id: packet_id
-                            });
-                        }
-                        CtrlPacket::PUBCOMP { packet_id } => {
-                            match self.published.get_mut(&packet_id) {
-                                Some(mut published_token) => {
-                                    published_token.publish_state =
-                                        PublishState::Complete
-                                }, None => {}
-                            }
-                            return Ok(ReceivedPacket::WithId {
-                                packet_id: packet_id
-                            });
-                        },
-                        CtrlPacket::SUBACK { packet_id, return_code } => {
-                            match self.subscribed.get_mut(&packet_id) {
-                                Some(mut subscribe_token) => {
-                                    subscribe_token.return_code = Some(return_code);
-                                }, None => {}
-                            }
-                            return Ok(ReceivedPacket::WithId {
-                                packet_id: packet_id
-                            });
-                        },
-                        CtrlPacket::UNSUBACK { packet_id } => {
-                            match self.unsubscribed.get_mut(&packet_id) {
-                                Some(mut unsubscribe_token) => {
-                                    unsubscribe_token.unsubscribed = true;
-                                }, None => {}
-                            }
-                            return Ok(ReceivedPacket::WithId {
-                                packet_id: packet_id
-                            });
-                        }
-                        _ => {}
-                    }
+                    return Ok(self.handle_received_packet(packet));
                 },
                 Err(error) => {
-                    return Err(error);
+                    match error {
+                        ReceiveFailed::Timeout => {
+                            self.keep_alive_check();
+
+                            // if timeout is exceeded return adequate result
+                            // TODO optimize the timeout check
+                            match timeout {
+                                Some(ref finish_timestamp) => {
+                                    if time::get_time().gt(finish_timestamp) {
+                                        return Err(ReceiveFailed::Timeout);
+                                    }
+                                }, None => {}
+                            }
+                        }, ReceiveFailed::ConnectionError { details } => {
+                            return Err(ReceiveFailed::ConnectionError {
+                                details: details
+                            });
+                        }
+                    }
                 }
             }
+        }
+    }
 
-            // keep alive check
-            let current_timestamp_second = time::get_time().sec;
-            if current_timestamp_second > self.connection.last_message_sent + self.keep_alive as i64 {
-                self.connection.send(CtrlPacket::PINGREQ);
+    /// When packet is received from broker, this method handles it.
+    #[allow(unused_variables)]
+    fn handle_received_packet(&mut self, packet: CtrlPacket) -> ReceivedPacket {
+        match packet {
+            CtrlPacket::PUBLISH { packet_id, topic, payload,
+                        duplicate_delivery, qos, retain } => {
+                if qos == 1 {
+                    self.connection.send(CtrlPacket::PUBACK {
+                        packet_id: packet_id.unwrap()
+                    });
+                } else if qos == 2 {
+                    self.connection.send(CtrlPacket::PUBREC {
+                        packet_id: packet_id.unwrap()
+                    });
+                }
+                self.received.push(ReceivedMessage::new(topic, payload));
+                match packet_id {
+                    Some(publish_packet_id) => {
+                        return ReceivedPacket::WithId {
+                            packet_id: publish_packet_id
+                        };
+                    }, None => {
+                        return ReceivedPacket::WithoutId;
+                    }
+                }
+            },
+            // TODO what to do if I receive PUBACK/COMP/.. with id that I dont know?
+            // TODO is it possible?
+            CtrlPacket::PUBACK { packet_id } => {
+                match self.published.get_mut(&packet_id) {
+                    Some(mut published_token) => {
+                        published_token.publish_state = PublishState::Acknowledgement;
+                    }, None => {}
+                }
+                return ReceivedPacket::WithId {
+                    packet_id: packet_id
+                };
+            },
+            CtrlPacket::PUBREC { packet_id } => {
+                match self.published.get_mut(&packet_id) {
+                    Some(mut published_token) => {
+                        published_token.publish_state = PublishState::Received;
+                    }, None => {}
+                }
+                self.connection.send(CtrlPacket::PUBREL {
+                    packet_id: packet_id
+                });
+                // TODO irrelevant?
+                return ReceivedPacket::WithId {
+                    packet_id: packet_id
+                };
+            },
+            CtrlPacket::PUBREL { packet_id } => {
+                match self.published.get_mut(&packet_id) {
+                    Some(mut published_token) => {
+                        published_token.publish_state =
+                            PublishState::Release
+                    }, None => {}
+                }
+                self.connection.send(CtrlPacket::PUBCOMP {
+                    packet_id: packet_id
+                });
+                // TODO irrelevant?
+                return ReceivedPacket::WithId {
+                    packet_id: packet_id
+                };
             }
+            CtrlPacket::PUBCOMP { packet_id } => {
+                match self.published.get_mut(&packet_id) {
+                    Some(mut published_token) => {
+                        published_token.publish_state =
+                            PublishState::Complete
+                    }, None => {}
+                }
+                return ReceivedPacket::WithId {
+                    packet_id: packet_id
+                };
+            },
+            CtrlPacket::SUBACK { packet_id, return_code } => {
+                match self.subscribed.get_mut(&packet_id) {
+                    Some(mut subscribe_token) => {
+                        subscribe_token.return_code = Some(return_code);
+                    }, None => {}
+                }
+                return ReceivedPacket::WithId {
+                    packet_id: packet_id
+                };
+            },
+            CtrlPacket::UNSUBACK { packet_id } => {
+                match self.unsubscribed.get_mut(&packet_id) {
+                    Some(mut unsubscribe_token) => {
+                        unsubscribe_token.unsubscribed = true;
+                    }, None => {}
+                }
+                return ReceivedPacket::WithId {
+                    packet_id: packet_id
+                };
+            }
+            _ => {
+                return ReceivedPacket::WithoutId;
+            }
+        }
+    }
+
+    /// This method adjusts the given timeout to make sure that the timeout does not exceeds the
+    /// time one next PINGREQ packet should be sent.
+    fn adjust_timeout(&self, timeout: Option<Timespec>) -> Timespec {
+        // TODO optimize this calculation
+        let next_ping_time = Timespec::new(
+            self.connection.last_message_sent + (self.keep_alive as f32 * 0.8) as i64, 0 as i32);
+        match timeout {
+            Some(finish_timestamp) => {
+                if next_ping_time.lt(&finish_timestamp) {
+                    next_ping_time
+                } else {
+                    finish_timestamp
+                }
+            }, None => {
+                next_ping_time
+            }
+        }
+    }
+
+    /// This method checks whether the time since last message is close to keep-alive timeout.
+    /// If yes, it sends a PINGREQ packet.
+    fn keep_alive_check(&mut self) {
+        // keep alive check
+        let current_timestamp_second = time::get_time().sec;
+        if current_timestamp_second >=
+                self.connection.last_message_sent + (self.keep_alive as f32 * 0.8) as i64 {
+            self.connection.send(CtrlPacket::PINGREQ);
         }
     }
 
@@ -655,20 +714,16 @@ impl MqttConnection {
 
     /// Method receives a package from broker.
     #[allow(unused_must_use)]
-    fn receive(&mut self, timeout: Option<Timespec>) -> Result<CtrlPacket, ReceiveFailed> {
+    fn receive(&mut self, timeout: Timespec) -> Result<CtrlPacket, ReceiveFailed> {
         let mut buffer: Vec<u8> = Vec::new();
         loop {
-            match timeout {
-                Some(finish_timestamp) => {
-                    let time_duration = finish_timestamp.sub(time::get_time());
-                    let duration = Duration::new(time_duration.num_seconds() as u64,
-                        (time_duration.num_nanoseconds().unwrap()
-                            - time_duration.num_seconds() * 1000000000) as u32);
-                    self.stream.set_read_timeout(Some(duration));
-                }, None => {
-                    self.stream.set_read_timeout(None);
-                }
-            }
+
+            // calculate time (duration) till timeout
+            let time_duration = timeout.sub(time::get_time());
+            let duration = Duration::new(time_duration.num_seconds() as u64,
+                (time_duration.num_nanoseconds().unwrap()
+                    - time_duration.num_seconds() * 1000000000) as u32);
+            self.stream.set_read_timeout(Some(duration));
 
             for byte in std::io::Read::by_ref(&mut self.stream).bytes() {
                 match byte {
@@ -683,7 +738,7 @@ impl MqttConnection {
                     Err(error) => {
                         match error.kind() {
                             ErrorKind::WouldBlock | ErrorKind::TimedOut => {
-                                break;
+                                return Err(ReceiveFailed::Timeout);
                             },
                             _ => {
                                 return Err(ReceiveFailed::ConnectionError {
@@ -693,14 +748,6 @@ impl MqttConnection {
                         }
                     }
                 }
-            }
-            // TODO optimize the timeout check
-            match timeout {
-                Some(ref finish_timestamp) => {
-                    if time::get_time().lt(finish_timestamp) {
-                        return Err(ReceiveFailed::Timeout);
-                    }
-                }, None => {}
             }
         }
     }
